@@ -1061,6 +1061,7 @@ class TrainerTrainLoopMixin(ABC):
 
                 # enter amp context
                 if self.amp_backend == AMPType.APEX:
+                    self.dev_debugger.track_event('AMP', str(AMPType.APEX))
                     context = closure_loss
                     closure_loss = closure_loss.__enter__()
 
