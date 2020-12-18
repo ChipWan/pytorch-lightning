@@ -1,9 +1,23 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import gc
 
 import torch
 
 
-def recursive_detach(in_dict: dict) -> dict:
+def recursive_detach(in_dict: dict, to_cpu: bool = False) -> dict:
     """Detach all tensors in `in_dict`.
 
     May operate recursively if some of the values in `in_dict` are dictionaries
@@ -12,6 +26,7 @@ def recursive_detach(in_dict: dict) -> dict:
 
     Args:
         in_dict:
+        to_cpu: Wheter to move tensor to cpu
 
     Return:
         out_dict:
@@ -21,7 +36,11 @@ def recursive_detach(in_dict: dict) -> dict:
         if isinstance(v, dict):
             out_dict.update({k: recursive_detach(v)})
         elif callable(getattr(v, 'detach', None)):
-            out_dict.update({k: v.detach()})
+            # detach
+            v = v.detach()
+            if to_cpu:
+                v = v.cpu()
+            out_dict.update({k: v})
         else:
             out_dict.update({k: v})
     return out_dict

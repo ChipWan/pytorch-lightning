@@ -1,34 +1,45 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-TensorBoard
------------
+TensorBoard Logger
+------------------
 """
 
 import os
 from argparse import Namespace
-from typing import Optional, Dict, Union, Any
-from warnings import warn
+from typing import Any, Dict, Optional, Union
 
 import torch
-from pkg_resources import parse_version
 from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.summary import hparams
 
 from pytorch_lightning import _logger as log
+from pytorch_lightning.core.lightning import LightningModule
 from pytorch_lightning.core.saving import save_hparams_to_yaml
 from pytorch_lightning.loggers.base import LightningLoggerBase, rank_zero_experiment
-from pytorch_lightning.utilities import rank_zero_only
-from pytorch_lightning.utilities.cloud_io import gfile, makedirs
+from pytorch_lightning.utilities import rank_zero_only, rank_zero_warn, OMEGACONF_AVAILABLE
+from pytorch_lightning.utilities.cloud_io import get_filesystem
 
-try:
+if OMEGACONF_AVAILABLE:
     from omegaconf import Container, OmegaConf
-except ImportError:
-    OMEGACONF_AVAILABLE = False
-else:
-    OMEGACONF_AVAILABLE = True
 
 
 class TensorBoardLogger(LightningLoggerBase):
     r"""
     Log to local file system in `TensorBoard <https://www.tensorflow.org/tensorboard>`_ format.
+
     Implemented using :class:`~torch.utils.tensorboard.SummaryWriter`. Logs are saved to
     ``os.path.join(save_dir, name, version)``. This is the default logger in Lightning, it comes
     preinstalled.
@@ -47,20 +58,37 @@ class TensorBoardLogger(LightningLoggerBase):
             directory for existing versions, then automatically assigns the next available version.
             If it is a string then it is used as the run-specific subdirectory name,
             otherwise ``'version_${version}'`` is used.
-        \**kwargs: Other arguments are passed directly to the :class:`SummaryWriter` constructor.
+        log_graph: Adds the computational graph to tensorboard. This requires that
+            the user has defined the `self.example_input_array` attribute in their
+            model.
+        default_hp_metric: Enables a placeholder metric with key `hp_metric` when `log_hyperparams` is
+            called without a metric (otherwise calls to log_hyperparams without a metric are ignored).
+        prefix: A string to put at the beginning of metric keys.
+        \**kwargs: Additional arguments like `comment`, `filename_suffix`, etc. used by
+            :class:`SummaryWriter` can be passed as keyword arguments in this logger.
 
     """
     NAME_HPARAMS_FILE = 'hparams.yaml'
+    LOGGER_JOIN_CHAR = '-'
 
-    def __init__(self,
-                 save_dir: str,
-                 name: Optional[str] = "default",
-                 version: Optional[Union[int, str]] = None,
-                 **kwargs):
+    def __init__(
+        self,
+        save_dir: str,
+        name: Optional[str] = "default",
+        version: Optional[Union[int, str]] = None,
+        log_graph: bool = False,
+        default_hp_metric: bool = True,
+        prefix: str = '',
+        **kwargs
+    ):
         super().__init__()
         self._save_dir = save_dir
         self._name = name or ''
         self._version = version
+        self._log_graph = log_graph
+        self._default_hp_metric = default_hp_metric
+        self._prefix = prefix
+        self._fs = get_filesystem(save_dir)
 
         self._experiment = None
         self.hparams = {}
@@ -110,8 +138,8 @@ class TensorBoardLogger(LightningLoggerBase):
             return self._experiment
 
         assert rank_zero_only.rank == 0, 'tried to init log dirs in non global_rank=0'
-        if self.root_dir and not gfile.exists(str(self.root_dir)):
-            makedirs(self.root_dir)
+        if self.root_dir:
+            self._fs.makedirs(self.root_dir, exist_ok=True)
         self._experiment = SummaryWriter(log_dir=self.log_dir, **self._kwargs)
         return self._experiment
 
@@ -130,51 +158,71 @@ class TensorBoardLogger(LightningLoggerBase):
         params = self._flatten_dict(params)
         params = self._sanitize_params(params)
 
-        if parse_version(torch.__version__) < parse_version("1.3.0"):
-            warn(
-                f"Hyperparameter logging is not available for Torch version {torch.__version__}."
-                " Skipping log_hyperparams. Upgrade to Torch 1.3.0 or above to enable"
-                " hyperparameter logging."
-            )
-        else:
-            from torch.utils.tensorboard.summary import hparams
+        if metrics is None:
+            if self._default_hp_metric:
+                metrics = {"hp_metric": -1}
+        elif not isinstance(metrics, dict):
+            metrics = {"hp_metric": metrics}
 
-            if metrics is None:
-                metrics = {}
+        if metrics:
+            self.log_metrics(metrics, 0)
             exp, ssi, sei = hparams(params, metrics)
             writer = self.experiment._get_file_writer()
             writer.add_summary(exp)
             writer.add_summary(ssi)
             writer.add_summary(sei)
 
-            if metrics:
-                # necessary for hparam comparison with metrics
-                self.log_metrics(metrics)
-
     @rank_zero_only
     def log_metrics(self, metrics: Dict[str, float], step: Optional[int] = None) -> None:
         assert rank_zero_only.rank == 0, 'experiment tried to log from global_rank != 0'
 
+        metrics = self._add_prefix(metrics)
+
         for k, v in metrics.items():
             if isinstance(v, torch.Tensor):
                 v = v.item()
-            self.experiment.add_scalar(k, v, step)
+
+            if isinstance(v, dict):
+                self.experiment.add_scalars(k, v, step)
+            else:
+                try:
+                    self.experiment.add_scalar(k, v, step)
+                except Exception as e:
+                    m = f'\n you tried to log {v} which is not currently supported. Try a dict or a scalar/tensor.'
+                    type(e)(e.message + m)
+
+    @rank_zero_only
+    def log_graph(self, model: LightningModule, input_array=None):
+        if self._log_graph:
+            if input_array is None:
+                input_array = model.example_input_array
+
+            if input_array is not None:
+                input_array = model.transfer_batch_to_device(input_array, model.device)
+                self.experiment.add_graph(model, input_array)
+            else:
+                rank_zero_warn('Could not log computational graph since the'
+                               ' `model.example_input_array` attribute is not set'
+                               ' or `input_array` was not given',
+                               UserWarning)
 
     @rank_zero_only
     def save(self) -> None:
         super().save()
         dir_path = self.log_dir
-        if not gfile.isdir(dir_path):
+        if not self._fs.isdir(dir_path):
             dir_path = self.save_dir
 
         # prepare the file path
         hparams_file = os.path.join(dir_path, self.NAME_HPARAMS_FILE)
 
-        # save the metatags file
-        save_hparams_to_yaml(hparams_file, self.hparams)
+        # save the metatags file if it doesn't exist
+        if not os.path.isfile(hparams_file):
+            save_hparams_to_yaml(hparams_file, self.hparams)
 
     @rank_zero_only
     def finalize(self, status: str) -> None:
+        self.experiment.flush()
         self.save()
 
     @property
@@ -190,15 +238,17 @@ class TensorBoardLogger(LightningLoggerBase):
     def _get_next_version(self):
         root_dir = os.path.join(self.save_dir, self.name)
 
-        if not gfile.isdir(root_dir):
+        if not self._fs.isdir(root_dir):
             log.warning('Missing logger folder: %s', root_dir)
             return 0
 
         existing_versions = []
-        for d in gfile.listdir(root_dir):
-            if gfile.isdir(os.path.join(root_dir, d)) and d.startswith("version_"):
-                existing_versions.append(int(d.split("_")[1]))
-
+        for listing in self._fs.listdir(root_dir):
+            d = listing["name"]
+            bn = os.path.basename(d)
+            if self._fs.isdir(d) and bn.startswith("version_"):
+                dir_ver = bn.split("_")[1].replace('/', '')
+                existing_versions.append(int(dir_ver))
         if len(existing_versions) == 0:
             return 0
 

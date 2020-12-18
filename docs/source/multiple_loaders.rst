@@ -2,11 +2,13 @@
 
     from pytorch_lightning.core.lightning import LightningModule
 
+.. _multiple_loaders:
+
 Multiple Datasets
 =================
 Lightning supports multiple dataloaders in a few ways.
 
-1. Create a dataloader that iterates both datasets under the hood.
+1. Create a dataloader that iterates multiple datasets under the hood.
 2. In the validation and test loop you also have the option to return multiple dataloaders
    which lightning will call sequentially.
 
@@ -14,8 +16,8 @@ Lightning supports multiple dataloaders in a few ways.
 
 Multiple training dataloaders
 -----------------------------
-For training, the best way to use multiple-dataloaders is to create a Dataloader class
-which wraps both your dataloaders. (This of course also works for testing and validation
+For training, the best way to use multiple dataloaders is to create a ``DataLoader`` class
+which wraps your multiple dataloaders (this of course also works for testing and validation
 dataloaders).
 
 (`reference <https://discuss.pytorch.org/t/train-simultaneously-on-two-datasets/649/2>`_)
@@ -61,13 +63,13 @@ dataloaders).
 
 Test/Val dataloaders
 --------------------
-For validation, test dataloaders lightning also gives you the additional
-option of passing in multiple dataloaders back from each call.
+For validation and test dataloaders, lightning also gives you the additional
+option of passing multiple dataloaders back from each call.
 
 See the following for more details:
 
-- :meth:`~pytorch_lightning.core.LightningModule.val_dataloader`
-- :meth:`~pytorch_lightning.core.LightningModule.test_dataloader`
+- :meth:`~pytorch_lightning.core.datamodule.LightningDataModule.val_dataloader`
+- :meth:`~pytorch_lightning.core.datamodule.LightningDataModule.test_dataloader`
 
 .. testcode::
 

@@ -1,103 +1,135 @@
-"""Mirroring deprecated API"""
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-from abc import ABC
-from typing import Union
-
-from pytorch_lightning.utilities import rank_zero_warn
+from pytorch_lightning.utilities import rank_zero_warn, DistributedType, DeviceType
 
 
-class TrainerDeprecatedAPITillVer0_10(ABC):
-    limit_val_batches: Union[int, float]
-    limit_test_batches: Union[int, float]
-    limit_train_batches: Union[int, float]
-    overfit_batches: Union[int, float]
-    is_global_zero: bool
-    _weights_save_path: str
-    weights_save_path: str
+class DeprecatedDistDeviceAttributes:
 
-    def __init__(self):
-        super().__init__()  # mixin calls super too
-
-    @property
-    def val_percent_check(self) -> Union[int, float]:
-        """Back compatibility, will be removed in v0.10.0"""
-        rank_zero_warn("Attribute `val_percent_check` is now set by `limit_val_batches` since v0.8.0"
-                       " and this method will be removed in v0.10.0", DeprecationWarning)
-        return self.limit_val_batches
-
-    @val_percent_check.setter
-    def val_percent_check(self, pct):
-        """Back compatibility, will be removed in v0.10.0"""
-        rank_zero_warn("Attribute `val_percent_check` is now set by `limit_val_batches` since v0.8.0"
-                       " and this method will be removed in v0.10.0", DeprecationWarning)
-        self.limit_val_batches = pct
+    _distrib_type: DistributedType
+    _device_type: DeviceType
+    num_gpus: int
 
     @property
-    def test_percent_check(self) -> Union[int, float]:
-        """Back compatibility, will be removed in v0.10.0"""
-        rank_zero_warn("Attribute `test_percent_check` is now set by `limit_test_batches` since v0.8.0"
-                       " and this method will be removed in v0.10.0", DeprecationWarning)
-        return self.limit_test_batches
+    def on_cpu(self) -> bool:
+        # rank_zero_warn("Internal: `on_cpu` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning)
+        return self._device_type and self._device_type == DeviceType.CPU
 
-    @test_percent_check.setter
-    def test_percent_check(self, pct):
-        """Back compatibility, will be removed in v0.10.0"""
-        rank_zero_warn("Attribute `test_percent_check` is now set by `limit_test_batches` since v0.8.0"
-                       " and this method will be removed in v0.10.0", DeprecationWarning)
-        self.limit_test_batches = pct
+    @on_cpu.setter
+    def on_cpu(self, val: bool) -> None:
+        # rank_zero_warn("Internal: `on_cpu` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning)
+        if val:
+            self._device_type = DeviceType.CPU
 
     @property
-    def train_percent_check(self) -> Union[int, float]:
-        """Back compatibility, will be removed in v0.10.0"""
-        rank_zero_warn("Attribute `train_percent_check` is now set by `limit_train_batches` since v0.8.0"
-                       " and this method will be removed in v0.10.0", DeprecationWarning)
-        return self.limit_train_batches
+    def on_tpu(self) -> bool:
+        # rank_zero_warn("Internal: `on_tpu` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning)
+        return self._device_type and self._device_type == DeviceType.TPU
 
-    @train_percent_check.setter
-    def train_percent_check(self, pct):
-        """Back compatibility, will be removed in v0.10.0"""
-        rank_zero_warn("Attribute `train_percent_check` is now set by `limit_train_batches` since v0.8.0"
-                       " and this method will be removed in v0.10.0", DeprecationWarning)
-        self.limit_train_batches = pct
+    @on_tpu.setter
+    def on_tpu(self, val: bool) -> None:
+        # rank_zero_warn("Internal: `on_tpu` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning)
+        # todo add logic that it cannot be set if TPU is missing
+        if val:
+            self._device_type = DeviceType.TPU
 
     @property
-    def overfit_pct(self) -> Union[int, float]:
-        """Back compatibility, will be removed in v0.10.0"""
-        rank_zero_warn("Attribute `train_percent_check` is now set by `overfit_batches` since v0.8.0"
-                       " and this method will be removed in v0.10.0", DeprecationWarning)
-        return self.overfit_batches
+    def use_tpu(self) -> bool:
+        # rank_zero_warn("Internal: `use_tpu` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning)
+        return self._device_type and self._device_type == DeviceType.TPU
 
-    @overfit_pct.setter
-    def overfit_pct(self, pct):
-        """Back compatibility, will be removed in v0.10.0"""
-        rank_zero_warn("Attribute `train_percent_check` is now set by `overfit_batches` since v0.8.0"
-                       " and this method will be removed in v0.10.0", DeprecationWarning)
-        self.overfit_batches = pct
+    @use_tpu.setter
+    def use_tpu(self, val: bool) -> None:
+        # rank_zero_warn("Internal: `use_tpu` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning)
+        # todo add logic that it cannot be set if TPU is missing
+        if val:
+            self._device_type = DeviceType.TPU
 
     @property
-    def proc_rank(self) -> int:
-        """Back compatibility, will be removed in v0.10.0"""
-        rank_zero_warn("Attribute `proc_rank` is now set by `global_rank` since v0.8.0"
-                       " and this method will be removed in v0.10.0", DeprecationWarning)
-        return self.global_rank
+    def on_gpu(self) -> bool:
+        # rank_zero_warn("Internal: `on_gpu` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning)
+        return self._device_type and self._device_type == DeviceType.GPU
 
-    @proc_rank.setter
-    def proc_rank(self, rank):
-        """Back compatibility, will be removed in v0.10.0"""
-        rank_zero_warn("Attribute `proc_rank` is now set by `global_rank` since v0.8.0"
-                       " and this method will be removed in v0.10.0", DeprecationWarning)
-        self.global_rank = rank
+    @on_gpu.setter
+    def on_gpu(self, val: bool) -> None:
+        # rank_zero_warn("Internal: `on_gpu` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning)
+        # todo add logic that it cannot be set if GPU is missing
+        if val:
+            self._device_type = DeviceType.GPU
 
     @property
-    def ckpt_path(self) -> str:
-        """Back compatibility, will be removed in v0.10.0"""
-        rank_zero_warn("Attribute `ckpt_path` is now set by `weights_save_path` since v0.9.0"
-                       " and this method will be removed in v0.10.0", DeprecationWarning)
-        return self.weights_save_path if self.is_global_zero else None
+    def use_dp(self) -> bool:
+        # rank_zero_warn("Internal: `use_dp` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning)
+        return self._device_type and self._distrib_type == DistributedType.DP
 
-    @ckpt_path.setter
-    def ckpt_path(self, path: str):
-        """Back compatibility, will be removed in v0.10.0"""
-        rank_zero_warn("Attribute `ckpt_path` is now set by `weights_save_path` since v0.9.0"
-                       " and this method will be removed in v0.10.0", DeprecationWarning)
-        self._weights_save_path = path
+    @use_dp.setter
+    def use_dp(self, val: bool) -> None:
+        # rank_zero_warn("Internal: `use_dp` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning)
+        if val:
+            self._distrib_type = DistributedType.DP
+
+    @property
+    def use_ddp(self) -> bool:
+        # rank_zero_warn("Internal: `use_ddp` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning)
+        return self._device_type and self._distrib_type == DistributedType.DDP
+
+    @use_ddp.setter
+    def use_ddp(self, val: bool) -> None:
+        # rank_zero_warn("Internal: `use_ddp` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning)
+        if val:
+            self._distrib_type = DistributedType.DDP
+
+    @property
+    def use_ddp2(self) -> bool:
+        # rank_zero_warn("Internal: `use_ddp2` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning)
+        return self._device_type and self._distrib_type == DistributedType.DDP2
+
+    @use_ddp2.setter
+    def use_ddp2(self, val: bool) -> None:
+        # rank_zero_warn("Internal: `use_ddp2` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning)
+        if val:
+            self._distrib_type = DistributedType.DDP2
+
+    @property
+    def use_horovod(self) -> bool:
+        # rank_zero_warn(
+        #     "Internal: `use_horovod` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning
+        # )
+        return self._device_type and self._distrib_type == DistributedType.HOROVOD
+
+    @use_horovod.setter
+    def use_horovod(self, val: bool) -> None:
+        # rank_zero_warn(
+        #     "Internal: `use_horovod` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning
+        # )
+        if val:
+            self._distrib_type = DistributedType.HOROVOD
+
+    @property
+    def use_single_gpu(self) -> bool:
+        # rank_zero_warn(
+        #     "Internal: `use_single_gpu` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning,
+        # )
+        # todo, limiting to exclude DDP2 is not clear but it comes from connectors...
+        return (self._device_type and self._device_type == DeviceType.GPU
+                and self.num_gpus == 1
+                and self._distrib_type not in (DistributedType.DDP2, ))
+
+    @use_single_gpu.setter
+    def use_single_gpu(self, val: bool) -> None:
+        # rank_zero_warn(
+        #     "Internal: `use_single_gpu` is deprecated in v1.1 and will be removed in v1.2.", DeprecationWarning,
+        # )
+        if val:
+            self._device_type = DeviceType.GPU

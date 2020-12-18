@@ -1,43 +1,30 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import os
-from unittest.mock import MagicMock
+from unittest import mock
 
 import pytest
 import torch
-import wandb
 
 import tests.base.develop_pipelines as tpipes
 import tests.base.develop_utils as tutils
 from pytorch_lightning import Trainer
+from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.trainer.states import TrainerState
+from pytorch_lightning.utilities import APEX_AVAILABLE
 from pytorch_lightning.utilities.exceptions import MisconfigurationException
 from tests.base import EvalModelTemplate
-
-
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="test requires multi-GPU machine")
-def test_multi_gpu_wandb_ddp_spawn(tmpdir):
-    """Make sure DP/DDP + AMP work."""
-    from pytorch_lightning.loggers import WandbLogger
-    tutils.set_random_master_port()
-
-    model = EvalModelTemplate()
-
-    wandb.run = MagicMock()
-    wandb.init(name='name', project='project')
-
-    logger = WandbLogger(name='name', offline=True)
-    trainer_options = dict(
-        default_root_dir=tmpdir,
-        max_epochs=1,
-        gpus=2,
-        distributed_backend='ddp_spawn',
-        precision=16,
-        logger=logger,
-
-    )
-    # tutils.run_model_test(trainer_options, model)
-    trainer = Trainer(**trainer_options)
-    result = trainer.fit(model)
-    assert result
-    trainer.test(model)
 
 
 @pytest.mark.skip(reason='dp + amp not supported currently')  # TODO
@@ -50,7 +37,7 @@ def test_amp_single_gpu_dp(tmpdir):
         default_root_dir=tmpdir,
         max_epochs=1,
         gpus=1,
-        distributed_backend='dp',
+        accelerator='dp',
         precision=16,
     )
 
@@ -69,7 +56,7 @@ def test_amp_single_gpu_ddp_spawn(tmpdir):
         default_root_dir=tmpdir,
         max_epochs=1,
         gpus=1,
-        distributed_backend='ddp_spawn',
+        accelerator='ddp_spawn',
         precision=16,
     )
 
@@ -90,7 +77,7 @@ def test_amp_multi_gpu_dp(tmpdir):
         default_root_dir=tmpdir,
         max_epochs=1,
         gpus=2,
-        distributed_backend='dp',
+        accelerator='dp',
         precision=16,
     )
 
@@ -109,7 +96,7 @@ def test_amp_multi_gpu_ddp_spawn(tmpdir):
         default_root_dir=tmpdir,
         max_epochs=1,
         gpus=2,
-        distributed_backend='ddp_spawn',
+        accelerator='ddp_spawn',
         precision=16,
     )
 
@@ -140,9 +127,9 @@ def test_amp_gpu_ddp_slurm_managed(tmpdir):
         default_root_dir=tmpdir,
         max_epochs=1,
         gpus=[0],
-        distributed_backend='ddp_spawn',
+        accelerator='ddp_spawn',
         precision=16,
-        checkpoint_callback=checkpoint,
+        callbacks=[checkpoint],
         logger=logger,
     )
     trainer.is_slurm_managing_tasks = True
@@ -152,13 +139,14 @@ def test_amp_gpu_ddp_slurm_managed(tmpdir):
     assert result == 1, 'amp + ddp model failed to complete'
 
     # test root model address
-    assert trainer.resolve_root_node_address('abc') == 'abc'
-    assert trainer.resolve_root_node_address('abc[23]') == 'abc23'
-    assert trainer.resolve_root_node_address('abc[23-24]') == 'abc23'
-    assert trainer.resolve_root_node_address('abc[23-24, 45-40, 40]') == 'abc23'
+    assert trainer.slurm_connector.resolve_root_node_address('abc') == 'abc'
+    assert trainer.slurm_connector.resolve_root_node_address('abc[23]') == 'abc23'
+    assert trainer.slurm_connector.resolve_root_node_address('abc[23-24]') == 'abc23'
+    assert trainer.slurm_connector.resolve_root_node_address('abc[23-24, 45-40, 40]') == 'abc23'
 
 
-def test_cpu_model_with_amp(tmpdir):
+@pytest.mark.parametrize("enable_pl_optimizer", [False, True])
+def test_cpu_model_with_amp(enable_pl_optimizer, tmpdir):
     """Make sure model trains on CPU."""
     trainer_options = dict(
         default_root_dir=tmpdir,
@@ -166,10 +154,54 @@ def test_cpu_model_with_amp(tmpdir):
         max_epochs=1,
         limit_train_batches=0.4,
         limit_val_batches=0.4,
-        precision=16
+        precision=16,
+        enable_pl_optimizer=enable_pl_optimizer,
     )
 
     model = EvalModelTemplate()
 
     with pytest.raises((MisconfigurationException, ModuleNotFoundError)):
         tpipes.run_model_test(trainer_options, model, on_gpu=False)
+
+
+@mock.patch.dict(os.environ, {"PL_DEV_DEBUG": "1"})
+def test_amp_without_apex(tmpdir):
+    """Check that even with apex amp type without requesting precision=16 the amp backend is void."""
+    model = EvalModelTemplate()
+
+    trainer = Trainer(
+        default_root_dir=tmpdir,
+        amp_backend='native',
+    )
+    assert trainer.amp_backend is None
+
+    trainer = Trainer(
+        default_root_dir=tmpdir,
+        max_epochs=1,
+        amp_backend='apex',
+    )
+    assert trainer.amp_backend is None
+    trainer.fit(model)
+    assert trainer.state == TrainerState.FINISHED
+    assert trainer.dev_debugger.count_events('AMP') == 0
+
+
+@mock.patch.dict(os.environ, {"PL_DEV_DEBUG": "1"})
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="test requires GPU machine")
+@pytest.mark.skipif(not APEX_AVAILABLE, reason="test requires apex")
+def test_amp_with_apex(tmpdir):
+    """Check calling apex scaling in training."""
+
+    model = EvalModelTemplate()
+
+    trainer = Trainer(
+        default_root_dir=tmpdir,
+        max_epochs=1,
+        precision=16,
+        amp_backend='apex',
+        gpus=1,
+    )
+    assert str(trainer.amp_backend) == "AMPType.APEX"
+    trainer.fit(model)
+    assert trainer.state == TrainerState.FINISHED
+    assert trainer.dev_debugger.count_events('AMP') == 10

@@ -1,6 +1,21 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from typing import Generic, TypeVar
 
 from pytorch_lightning.core.lightning import LightningModule
 from tests.base.datasets import TrialMNIST, PATH_DATASETS
@@ -28,7 +43,7 @@ class EvalModelTemplate(
     ValDataloaderVariations,
     TestDataloaderVariations,
     ConfigureOptimizersPool,
-    LightningModule
+    LightningModule,
 ):
     """
     This template houses all  combinations of model  configurations  we want to test
@@ -47,7 +62,7 @@ class EvalModelTemplate(
             out_features: int = 10,
             hidden_dim: int = 1000,
             b1: float = 0.5,
-            b2: float = 0.999
+            b2: float = 0.999,
     ):
         # init superclass
         super().__init__()
@@ -83,17 +98,11 @@ class EvalModelTemplate(
         Simple model for testing
         :return:
         """
-        self.c_d1 = nn.Linear(
-            in_features=self.in_features,
-            out_features=self.hidden_dim
-        )
+        self.c_d1 = nn.Linear(in_features=self.in_features, out_features=self.hidden_dim)
         self.c_d1_bn = nn.BatchNorm1d(self.hidden_dim)
         self.c_d1_drop = nn.Dropout(self.drop_prob)
 
-        self.c_d2 = nn.Linear(
-            in_features=self.hidden_dim,
-            out_features=self.out_features
-        )
+        self.c_d2 = nn.Linear(in_features=self.hidden_dim, out_features=self.out_features)
 
     def forward(self, x):
         x = self.c_d1(x)
@@ -130,8 +139,42 @@ class EvalModelTemplate(
 
         if continue_training:
             args.update(
-                test_tube_do_checkpoint_load=True,
-                hpc_exp_number=hpc_exp_number,
+                test_tube_do_checkpoint_load=True, hpc_exp_number=hpc_exp_number,
             )
 
         return args
+
+
+T = TypeVar('T')
+
+
+class GenericParentEvalModelTemplate(Generic[T], EvalModelTemplate):
+    def __init__(
+        self,
+        drop_prob: float,
+        batch_size: int,
+        in_features: int,
+        learning_rate: float,
+        optimizer_name: str,
+        data_root: str,
+        out_features: int,
+        hidden_dim: int,
+        b1: float,
+        b2: float,
+    ):
+        super().__init__(
+            drop_prob=drop_prob,
+            batch_size=batch_size,
+            in_features=in_features,
+            learning_rate=learning_rate,
+            optimizer_name=optimizer_name,
+            data_root=data_root,
+            out_features=out_features,
+            hidden_dim=hidden_dim,
+            b1=b1,
+            b2=b2,
+        )
+
+
+class GenericEvalModelTemplate(GenericParentEvalModelTemplate[int]):
+    pass

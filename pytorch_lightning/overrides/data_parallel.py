@@ -1,6 +1,20 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import itertools
 import threading
-from collections import Mapping, Iterable
+from collections.abc import Iterable, Mapping
 from itertools import chain
 
 import torch
@@ -10,6 +24,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.nn.parallel._functions import Gather
 
 from pytorch_lightning.core.step_result import Result
+from pytorch_lightning.utilities.warning_utils import WarningCache
 
 
 def _find_tensors(obj):  # pragma: no-cover
@@ -38,6 +53,9 @@ def get_a_var(obj):  # pragma: no-cover
             if isinstance(result, torch.Tensor):
                 return result
     return None
+
+
+warning_cache = WarningCache()
 
 
 class LightningDataParallel(DataParallel):
@@ -137,13 +155,18 @@ class LightningDistributedDataParallel(DistributedDataParallel):
     """
     Override the forward call in lightning so it goes to training and validation step respectively
     """
+    PREPARE_FOR_BACKWARDS = True
 
     def parallel_apply(self, replicas, inputs, kwargs):
         return parallel_apply(replicas, inputs, kwargs, self.device_ids[:len(replicas)])
 
     def forward(self, *inputs, **kwargs):  # pragma: no-cover
         self._sync_params()
+        self.reducer_reset_hooks()
+        fx_called: str = ''
+
         if self.device_ids:
+
             inputs, kwargs = self.scatter(inputs, kwargs, self.device_ids)
             if len(self.device_ids) == 1:
                 # --------------
@@ -154,10 +177,13 @@ class LightningDistributedDataParallel(DistributedDataParallel):
                 # lightning
                 if self.module.training:
                     output = self.module.training_step(*inputs[0], **kwargs[0])
+                    fx_called = 'training_step'
                 elif self.module.testing:
                     output = self.module.test_step(*inputs[0], **kwargs[0])
+                    fx_called = 'test_step'
                 else:
                     output = self.module.validation_step(*inputs[0], **kwargs[0])
+                    fx_called = 'validation_step'
             else:
                 outputs = self.parallel_apply(self._module_copies[:len(inputs)], inputs, kwargs)
                 output = self.gather(outputs, self.output_device)
@@ -171,6 +197,15 @@ class LightningDistributedDataParallel(DistributedDataParallel):
             else:
                 output = self.module.validation_step(*inputs, **kwargs)
 
+        if not self._reducer_prepared_for_backwards and self.PREPARE_FOR_BACKWARDS:
+            self.reducer_prepare_for_backwards(output)
+
+        if output is None:
+            warn_missing_output(f'{fx_called} returned None. Did you forget to return an output')
+        return output
+
+    def reducer_prepare_for_backwards(self, output):
+        self._reducer_prepared_for_backwards = True
         if torch.is_grad_enabled():
             # We'll return the output object verbatim since it is a freeform
             # object. We need to find any tensors in this object, though,
@@ -181,7 +216,14 @@ class LightningDistributedDataParallel(DistributedDataParallel):
                 self.reducer.prepare_for_backward(list(_find_tensors(output)))
             else:
                 self.reducer.prepare_for_backward([])
-        return output
+
+    def reducer_reset_hooks(self):
+        self._reducer_prepared_for_backwards = False
+
+
+def warn_missing_output(fx_called):
+    if fx_called == 'training_step':
+        warning_cache.warn("Your training_step returned None. Make sure that was your intention!")
 
 
 def parallel_apply(modules, inputs, kwargs_tup=None, devices=None):  # pragma: no-cover
@@ -215,6 +257,7 @@ def parallel_apply(modules, inputs, kwargs_tup=None, devices=None):  # pragma: n
 
     def _worker(i, module, input, kwargs, device=None):
         torch.set_grad_enabled(grad_enabled)
+        fx_called: str = ''
         if device is None:
             device = get_a_var(input).get_device()
         try:
@@ -229,14 +272,18 @@ def parallel_apply(modules, inputs, kwargs_tup=None, devices=None):  # pragma: n
                 # CHANGE
                 if module.training:
                     output = module.training_step(*input, **kwargs)
-
+                    fx_called = 'training_step'
                 elif module.testing:
                     output = module.test_step(*input, **kwargs)
-
+                    fx_called = 'test_step'
                 else:
                     output = module.validation_step(*input, **kwargs)
+                    fx_called = 'validation_step'
 
-                if module.use_dp or module.use_ddp2:
+                if output is None:
+                    warn_missing_output(fx_called)
+
+                if output is not None and (module.use_dp or module.use_ddp2):
                     auto_squeeze_dim_zeros(output)
                 # ---------------
 
@@ -282,6 +329,10 @@ def auto_squeeze_dim_zeros(output):
     :param output:
     :return:
     """
+    if isinstance(output, torch.Tensor):
+        output = output.unsqueeze(0)
+        return output
+
     for k, v in output.items():
         if not isinstance(v, torch.Tensor):
             continue

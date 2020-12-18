@@ -1,20 +1,33 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import os
 import platform
+from distutils.version import LooseVersion
 
 import pytest
 import torch
-from packaging.version import parse as version_parse
 
 import tests.base.develop_pipelines as tpipes
 import tests.base.develop_utils as tutils
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import EarlyStopping
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.core.step_result import TrainResult
 from tests.base import EvalModelTemplate
 
 
-def test_cpu_slurm_save_load(tmpdir):
+@pytest.mark.parametrize("enable_pl_optimizer", [False, True])
+def test_cpu_slurm_save_load(enable_pl_optimizer, tmpdir):
     """Verify model save/load/checkpoint on CPU."""
     hparams = EvalModelTemplate.get_default_hparams()
     model = EvalModelTemplate(**hparams)
@@ -30,7 +43,8 @@ def test_cpu_slurm_save_load(tmpdir):
         logger=logger,
         limit_train_batches=0.2,
         limit_val_batches=0.2,
-        checkpoint_callback=ModelCheckpoint(tmpdir),
+        callbacks=[ModelCheckpoint(dirpath=tmpdir)],
+        enable_pl_optimizer=enable_pl_optimizer,
     )
     result = trainer.fit(model)
     real_global_step = trainer.global_step
@@ -56,7 +70,7 @@ def test_cpu_slurm_save_load(tmpdir):
 
     # test HPC saving
     # simulate snapshot on slurm
-    saved_filepath = trainer.hpc_save(trainer.weights_save_path, logger)
+    saved_filepath = trainer.checkpoint_connector.hpc_save(trainer.weights_save_path, logger)
     assert os.path.exists(saved_filepath)
 
     # new logger file to get meta
@@ -66,7 +80,8 @@ def test_cpu_slurm_save_load(tmpdir):
         default_root_dir=tmpdir,
         max_epochs=1,
         logger=logger,
-        checkpoint_callback=ModelCheckpoint(tmpdir),
+        callbacks=[ModelCheckpoint(dirpath=tmpdir)],
+        enable_pl_optimizer=enable_pl_optimizer,
     )
     model = EvalModelTemplate(**hparams)
 
@@ -86,18 +101,20 @@ def test_cpu_slurm_save_load(tmpdir):
     trainer.fit(model)
 
 
-def test_early_stopping_cpu_model(tmpdir):
+@pytest.mark.parametrize("enable_pl_optimizer", [False, True])
+def test_early_stopping_cpu_model(enable_pl_optimizer, tmpdir):
     """Test each of the trainer options."""
-    stopping = EarlyStopping(monitor='val_loss', min_delta=0.1)
+    stopping = EarlyStopping(monitor='early_stop_on', min_delta=0.1)
     trainer_options = dict(
         default_root_dir=tmpdir,
-        early_stop_callback=stopping,
+        callbacks=[stopping],
         max_epochs=2,
         gradient_clip_val=1.0,
         overfit_batches=0.20,
         track_grad_norm=2,
         limit_train_batches=0.1,
         limit_val_batches=0.1,
+        enable_pl_optimizer=enable_pl_optimizer,
     )
 
     model = EvalModelTemplate()
@@ -111,9 +128,10 @@ def test_early_stopping_cpu_model(tmpdir):
 @pytest.mark.skipif(platform.system() == "Windows",
                     reason="Distributed training is not supported on Windows")
 @pytest.mark.skipif((platform.system() == "Darwin" and
-                     version_parse(torch.__version__) < version_parse("1.3.0")),
+                     LooseVersion(torch.__version__) < LooseVersion("1.3.0")),
                     reason="Distributed training is not supported on MacOS before Torch 1.3.0")
-def test_multi_cpu_model_ddp(tmpdir):
+@pytest.mark.parametrize("enable_pl_optimizer", [False, True])
+def test_multi_cpu_model_ddp(enable_pl_optimizer, tmpdir):
     """Make sure DDP works."""
     tutils.set_random_master_port()
 
@@ -125,7 +143,8 @@ def test_multi_cpu_model_ddp(tmpdir):
         limit_val_batches=0.2,
         gpus=None,
         num_processes=2,
-        distributed_backend='ddp_cpu',
+        accelerator='ddp_cpu',
+        enable_pl_optimizer=enable_pl_optimizer,
     )
 
     model = EvalModelTemplate()
@@ -189,7 +208,7 @@ def test_running_test_after_fitting(tmpdir):
         limit_train_batches=0.4,
         limit_val_batches=0.2,
         limit_test_batches=0.2,
-        checkpoint_callback=checkpoint,
+        callbacks=[checkpoint],
         logger=logger,
     )
     result = trainer.fit(model)
@@ -220,9 +239,8 @@ def test_running_test_no_val(tmpdir):
         limit_train_batches=0.4,
         limit_val_batches=0.2,
         limit_test_batches=0.2,
-        checkpoint_callback=checkpoint,
+        callbacks=[checkpoint],
         logger=logger,
-        early_stop_callback=False,
     )
     result = trainer.fit(model)
 
@@ -266,7 +284,8 @@ def test_cpu_model(tmpdir):
     tpipes.run_model_test(trainer_options, model, on_gpu=False)
 
 
-def test_all_features_cpu_model(tmpdir):
+@pytest.mark.parametrize("enable_pl_optimizer", [False, True])
+def test_all_features_cpu_model(enable_pl_optimizer, tmpdir):
     """Test each of the trainer options."""
     trainer_options = dict(
         default_root_dir=tmpdir,
@@ -277,7 +296,8 @@ def test_all_features_cpu_model(tmpdir):
         accumulate_grad_batches=2,
         max_epochs=1,
         limit_train_batches=0.4,
-        limit_val_batches=0.4
+        limit_val_batches=0.4,
+        enable_pl_optimizer=enable_pl_optimizer,
     )
 
     model = EvalModelTemplate()
@@ -327,7 +347,7 @@ def test_tbptt_cpu_model(tmpdir):
             training_step_outputs = training_step_outputs[0]
             assert len(training_step_outputs) == (sequence_size / truncated_bptt_steps)
             loss = torch.stack([x['loss'] for x in training_step_outputs]).mean()
-            return {'log': {'train_loss': loss}}
+            self.log('train_loss', loss)
 
         def train_dataloader(self):
             return torch.utils.data.DataLoader(
@@ -346,6 +366,7 @@ def test_tbptt_cpu_model(tmpdir):
     )
 
     model = BpttTestModel(**hparams)
+    model.example_input_array = torch.randn(5, truncated_bptt_steps)
 
     # fit model
     trainer = Trainer(
@@ -354,7 +375,6 @@ def test_tbptt_cpu_model(tmpdir):
         truncated_bptt_steps=truncated_bptt_steps,
         limit_val_batches=0,
         weights_summary=None,
-        early_stop_callback=False,
     )
     result = trainer.fit(model)
 
@@ -424,6 +444,7 @@ def test_tbptt_cpu_model_result(tmpdir):
     )
 
     model = BpttTestModel(**hparams)
+    model.example_input_array = torch.randn(5, truncated_bptt_steps)
 
     # fit model
     trainer = Trainer(
@@ -432,7 +453,6 @@ def test_tbptt_cpu_model_result(tmpdir):
         truncated_bptt_steps=truncated_bptt_steps,
         limit_val_batches=0,
         weights_summary=None,
-        early_stop_callback=False,
     )
     result = trainer.fit(model)
 
@@ -494,6 +514,7 @@ def test_tbptt_cpu_model_result_auto_reduce(tmpdir):
     )
 
     model = BpttTestModel(**hparams)
+    model.example_input_array = torch.randn(5, truncated_bptt_steps)
 
     # fit model
     trainer = Trainer(
@@ -502,7 +523,6 @@ def test_tbptt_cpu_model_result_auto_reduce(tmpdir):
         truncated_bptt_steps=truncated_bptt_steps,
         limit_val_batches=0,
         weights_summary=None,
-        early_stop_callback=False,
     )
     result = trainer.fit(model)
 

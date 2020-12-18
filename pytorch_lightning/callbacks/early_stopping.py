@@ -1,36 +1,42 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 r"""
 Early Stopping
-==============
+^^^^^^^^^^^^^^
 
-Monitor a validation metric and stop training when it stops improving.
+Monitor a metric and stop training when it stops improving.
 
 """
-from copy import deepcopy
+import numbers
+import os
 
 import numpy as np
 import torch
-import torch.distributed as dist
 
 from pytorch_lightning import _logger as log
 from pytorch_lightning.callbacks.base import Callback
-from pytorch_lightning.utilities import rank_zero_warn
-
-torch_inf = torch.tensor(np.Inf)
-
-try:
-    import torch_xla
-    import torch_xla.core.xla_model as xm
-except ImportError:
-    XLA_AVAILABLE = False
-else:
-    XLA_AVAILABLE = True
+from pytorch_lightning.metrics.metric import Metric
+from pytorch_lightning.utilities import TPU_AVAILABLE, rank_zero_info, rank_zero_warn
 
 
 class EarlyStopping(Callback):
     r"""
+    Monitor a metric and stop training when it stops improving.
 
     Args:
-        monitor: quantity to be monitored. Default: ``'val_loss'``.
+        monitor: quantity to be monitored. Default: ``'early_stop_on'``.
         min_delta: minimum change in the monitored quantity
             to qualify as an improvement, i.e. an absolute
             change of less than `min_delta`, will count as no
@@ -44,7 +50,11 @@ class EarlyStopping(Callback):
             mode it will stop when the quantity
             monitored has stopped increasing; in `auto`
             mode, the direction is automatically inferred
-            from the name of the monitored quantity. Default: ``'auto'``.
+            from the name of the monitored quantity.
+
+            .. warning::
+               Setting ``mode='auto'`` has been deprecated in v1.1 and will be removed in v1.3.
+
         strict: whether to crash the training if `monitor` is
             not found in the validation metrics. Default: ``True``.
 
@@ -53,15 +63,22 @@ class EarlyStopping(Callback):
         >>> from pytorch_lightning import Trainer
         >>> from pytorch_lightning.callbacks import EarlyStopping
         >>> early_stopping = EarlyStopping('val_loss')
-        >>> trainer = Trainer(early_stop_callback=early_stopping)
+        >>> trainer = Trainer(callbacks=[early_stopping])
     """
     mode_dict = {
         'min': torch.lt,
         'max': torch.gt,
     }
 
-    def __init__(self, monitor: str = 'val_loss', min_delta: float = 0.0, patience: int = 3,
-                 verbose: bool = False, mode: str = 'auto', strict: bool = True):
+    def __init__(
+        self,
+        monitor: str = 'early_stop_on',
+        min_delta: float = 0.0,
+        patience: int = 3,
+        verbose: bool = False,
+        mode: str = 'auto',
+        strict: bool = True,
+    ):
         super().__init__()
         self.monitor = monitor
         self.patience = patience
@@ -71,29 +88,48 @@ class EarlyStopping(Callback):
         self.wait_count = 0
         self.stopped_epoch = 0
         self.mode = mode
+        self.warned_result_obj = False
+        # Indicates, if eval results are used as basis for early stopping
+        # It is set to False initially and overwritten, if eval results have been validated
+        self.based_on_eval_results = False
 
-        if mode not in self.mode_dict:
+        self.__init_monitor_mode()
+
+        self.min_delta *= 1 if self.monitor_op == torch.gt else -1
+        torch_inf = torch.tensor(np.Inf)
+        self.best_score = torch_inf if self.monitor_op == torch.lt else -torch_inf
+
+    def __init_monitor_mode(self):
+        # TODO: Update with MisconfigurationException when auto mode is removed in v1.3
+        if self.mode not in self.mode_dict and self.mode != 'auto':
             if self.verbose > 0:
-                log.info(f'EarlyStopping mode {mode} is unknown, fallback to auto mode.')
+                rank_zero_warn(
+                    f'EarlyStopping mode={self.mode} is unknown, fallback to auto mode.',
+                    RuntimeWarning,
+                )
             self.mode = 'auto'
 
         if self.mode == 'auto':
-            if self.monitor == 'acc':
+            rank_zero_warn(
+                "mode='auto' is deprecated in v1.1 and will be removed in v1.3."
+                " Default value for mode with be 'min' in v1.3.",
+                DeprecationWarning
+            )
+
+            if "acc" in self.monitor or self.monitor.startswith("fmeasure"):
                 self.mode = 'max'
             else:
                 self.mode = 'min'
-            if self.verbose > 0:
-                log.info(f'EarlyStopping mode set to {self.mode} for monitoring {self.monitor}.')
 
-        self.min_delta *= 1 if self.monitor_op == torch.gt else -1
-        self.best_score = torch_inf if self.monitor_op == torch.lt else -torch_inf
+            if self.verbose > 0:
+                rank_zero_info(f'EarlyStopping mode set to {self.mode} for monitoring {self.monitor}.')
 
     def _validate_condition_metric(self, logs):
         monitor_val = logs.get(self.monitor)
+
         error_msg = (f'Early stopping conditioned on metric `{self.monitor}`'
-                     f' which is not available. Either add `{self.monitor}` to the return of '
-                     f' validation_epoch end or modify your EarlyStopping callback to use any of the '
-                     f'following: `{"`, `".join(list(logs.keys()))}`')
+                     f' which is not available. Pass in or modify your `EarlyStopping` callback to use any of the'
+                     f' following: `{"`, `".join(list(logs.keys()))}`')
 
         if monitor_val is None:
             if self.strict:
@@ -109,7 +145,7 @@ class EarlyStopping(Callback):
     def monitor_op(self):
         return self.mode_dict[self.mode]
 
-    def state_dict(self):
+    def on_save_checkpoint(self, trainer, pl_module):
         return {
             'wait_count': self.wait_count,
             'stopped_epoch': self.stopped_epoch,
@@ -117,44 +153,47 @@ class EarlyStopping(Callback):
             'patience': self.patience
         }
 
-    def load_state_dict(self, state_dict):
-        state_dict = deepcopy(state_dict)
-        self.wait_count = state_dict['wait_count']
-        self.stopped_epoch = state_dict['stopped_epoch']
-        self.best_score = state_dict['best_score']
-        self.patience = state_dict['patience']
+    def on_load_checkpoint(self, checkpointed_state):
+        self.wait_count = checkpointed_state['wait_count']
+        self.stopped_epoch = checkpointed_state['stopped_epoch']
+        self.best_score = checkpointed_state['best_score']
+        self.patience = checkpointed_state['patience']
 
     def on_validation_end(self, trainer, pl_module):
+        if trainer.running_sanity_check:
+            return
+
         self._run_early_stopping_check(trainer, pl_module)
 
     def on_validation_epoch_end(self, trainer, pl_module):
-        val_es_key = 'val_early_stop_on'
-        if trainer.callback_metrics.get(val_es_key) is not None:
-            self.monitor = val_es_key
-
-        # disable strict checking when using structured results
-        if val_es_key in trainer.callback_metrics:
-            self.strict = False
-
-        self._validate_condition_metric(trainer.callback_metrics)
-
-    def on_train_epoch_end(self, trainer, pl_module):
-        # disable early stopping in train loop when there's a val loop
-        if self.monitor == 'val_early_stop_on':
+        if trainer.running_sanity_check:
             return
 
-        # early stopping can also work in the train loop when there is no val loop and when using structured results
+        if self._validate_condition_metric(trainer.logger_connector.callback_metrics):
+            # turn off early stopping in on_train_epoch_end
+            self.based_on_eval_results = True
+
+    def on_train_epoch_end(self, trainer, pl_module, outputs):
+        # disable early stopping in train loop when there's a val loop
+        if self.based_on_eval_results:
+            return
+
+        # early stopping can also work in the train loop when there is no val loop
         should_check_early_stop = False
-        train_es_key = 'early_stop_on'
-        if trainer.callback_metrics.get(train_es_key, None) is not None:
-            self.monitor = train_es_key
+
+        # fallback to monitor key in result dict
+        if trainer.logger_connector.callback_metrics.get(self.monitor, None) is not None:
             should_check_early_stop = True
 
         if should_check_early_stop:
             self._run_early_stopping_check(trainer, pl_module)
 
     def _run_early_stopping_check(self, trainer, pl_module):
-        logs = trainer.callback_metrics
+        """
+        Checks whether the early stopping condition is met
+        and if so tells the trainer to stop the training.
+        """
+        logs = trainer.logger_connector.callback_metrics
 
         if not self._validate_condition_metric(logs):
             return  # short circuit if metric not present
@@ -162,12 +201,15 @@ class EarlyStopping(Callback):
         current = logs.get(self.monitor)
 
         # when in dev debugging
-        trainer.dev_debugger.track_early_stopping_history(current)
+        trainer.dev_debugger.track_early_stopping_history(self, current)
 
-        if not isinstance(current, torch.Tensor):
-            current = torch.tensor(current, device=pl_module.device)
+        if current is not None:
+            if isinstance(current, Metric):
+                current = current.compute()
+            elif isinstance(current, numbers.Number):
+                current = torch.tensor(current, device=pl_module.device, dtype=torch.float)
 
-        if trainer.use_tpu and XLA_AVAILABLE:
+        if trainer.use_tpu and TPU_AVAILABLE:
             current = current.cpu()
 
         if self.monitor_op(current - self.min_delta, self.best_score):
@@ -182,25 +224,5 @@ class EarlyStopping(Callback):
                 trainer.should_stop = True
 
         # stop every ddp process if any world process decides to stop
-        self._stop_distributed_training(trainer, pl_module)
-
-    def _stop_distributed_training(self, trainer, pl_module):
-
-        # in ddp make sure all processes stop when one is flagged
-        if trainer.use_ddp or trainer.use_ddp2:
-            stop = torch.tensor(int(trainer.should_stop), device=pl_module.device)
-            dist.all_reduce(stop, op=dist.reduce_op.SUM)
-            dist.barrier()
-            trainer.should_stop = stop == trainer.world_size
-
-        if trainer.use_tpu:
-            stop = torch.tensor(int(trainer.should_stop), device=pl_module.device, dtype=torch.int32)
-            stop = xm.mesh_reduce("stop_signal", stop, torch.cat)
-            torch_xla.core.xla_model.rendezvous("pl.EarlyStoppingCallback.stop_distributed_training_check")
-            trainer.should_stop = int(stop.item()) == trainer.world_size
-
-    def on_train_end(self, trainer, pl_module):
-        if self.stopped_epoch > 0 and self.verbose > 0:
-            rank_zero_warn('Displayed epoch numbers by `EarlyStopping` start from "1" until v0.6.x,'
-                           ' but will start from "0" in v0.8.0.', DeprecationWarning)
-            log.info(f'Epoch {self.stopped_epoch + 1:05d}: early stopping triggered.')
+        should_stop = trainer.accelerator_backend.early_stopping_should_stop(pl_module)
+        trainer.should_stop = should_stop

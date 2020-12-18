@@ -1,15 +1,43 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Abstract base class used to build new loggers."""
+
 import argparse
 import functools
 import operator
 from abc import ABC, abstractmethod
 from argparse import Namespace
 from functools import wraps
-from typing import Union, Optional, Dict, Iterable, Any, Callable, List, Sequence, Mapping, Tuple, MutableMapping
+from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
 
+from pytorch_lightning.core.lightning import LightningModule
 from pytorch_lightning.utilities import rank_zero_only
+
+
+def rank_zero_experiment(fn: Callable) -> Callable:
+    """ Returns the real experiment on rank 0 and otherwise the DummyExperiment. """
+    @wraps(fn)
+    def experiment(self):
+        @rank_zero_only
+        def get_experiment():
+            return fn(self)
+        return get_experiment() or DummyExperiment()
+    return experiment
 
 
 class LightningLoggerBase(ABC):
@@ -154,6 +182,31 @@ class LightningLoggerBase(ABC):
         return params
 
     @staticmethod
+    def _sanitize_callable_params(params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Sanitize callable params dict, e.g. ``{'a': <function_**** at 0x****>} -> {'a': 'function_****'}``.
+
+        Args:
+            params: Dictionary containing the hyperparameters
+
+        Returns:
+            dictionary with all callables sanitized
+        """
+        def _sanitize_callable(val):
+            # Give them one chance to return a value. Don't go rabbit hole of recursive call
+            if isinstance(val, Callable):
+                try:
+                    _val = val()
+                    if isinstance(_val, Callable):
+                        return val.__name__
+                    return _val
+                except Exception:
+                    return getattr(val, "__name__", None)
+            return val
+
+        return {key: _sanitize_callable(val) for key, val in params.items()}
+
+    @staticmethod
     def _flatten_dict(params: Dict[str, Any], delimiter: str = '/') -> Dict[str, Any]:
         """
         Flatten hierarchical dict, e.g. ``{'a': {'b': 'c'}} -> {'a/b': 'c'}``.
@@ -209,7 +262,13 @@ class LightningLoggerBase(ABC):
          'namespace': 'Namespace(foo=3)',
          'string': 'abc'}
         """
-        return {k: v if type(v) in [bool, int, float, str, torch.Tensor] else str(v) for k, v in params.items()}
+        for k in params.keys():
+            # convert relevant np scalars to python types first (instead of str)
+            if isinstance(params[k], (np.bool_, np.integer, np.floating)):
+                params[k] = params[k].item()
+            elif type(params[k]) not in [bool, int, float, str, torch.Tensor]:
+                params[k] = str(params[k])
+        return params
 
     @abstractmethod
     def log_hyperparams(self, params: argparse.Namespace):
@@ -219,6 +278,16 @@ class LightningLoggerBase(ABC):
         Args:
             params: :class:`~argparse.Namespace` containing the hyperparameters
         """
+
+    def log_graph(self, model: LightningModule, input_array=None) -> None:
+        """
+        Record model graph
+
+        Args:
+            model: lightning model
+            input_array: input passes to `model.forward`
+        """
+        pass
 
     def save(self) -> None:
         """Save log data."""
@@ -254,6 +323,12 @@ class LightningLoggerBase(ABC):
     @abstractmethod
     def version(self) -> Union[int, str]:
         """Return the experiment version."""
+
+    def _add_prefix(self, metrics: Dict[str, float]):
+        if self._prefix:
+            metrics = {f'{self._prefix}{self.LOGGER_JOIN_CHAR}{k}': v for k, v in metrics.items()}
+
+        return metrics
 
 
 class LoggerCollection(LightningLoggerBase):
@@ -296,6 +371,10 @@ class LoggerCollection(LightningLoggerBase):
         for logger in self._logger_iterable:
             logger.log_hyperparams(params)
 
+    def log_graph(self, model: LightningModule, input_array=None) -> None:
+        for logger in self._logger_iterable:
+            logger.log_graph(model, input_array)
+
     def save(self) -> None:
         for logger in self._logger_iterable:
             logger.save()
@@ -330,6 +409,11 @@ class DummyExperiment(object):
     def __getattr__(self, _):
         return self.nop
 
+    def __getitem__(self, idx):
+        # enables self.logger[0].experiment.add_image
+        # and self.logger.experiment[0].add_image(...)
+        return self
+
 
 class DummyLogger(LightningLoggerBase):
     """ Dummy logger for internal use. Is usefull if we want to disable users
@@ -342,9 +426,11 @@ class DummyLogger(LightningLoggerBase):
     def experiment(self):
         return self._experiment
 
+    @rank_zero_only
     def log_metrics(self, metrics, step):
         pass
 
+    @rank_zero_only
     def log_hyperparams(self, params):
         pass
 
@@ -355,6 +441,9 @@ class DummyLogger(LightningLoggerBase):
     @property
     def version(self):
         pass
+
+    def __getitem__(self, idx):
+        return self
 
 
 def merge_dicts(
@@ -409,14 +498,3 @@ def merge_dicts(
             d_out[k] = (fn or default_func)(values_to_agg)
 
     return d_out
-
-
-def rank_zero_experiment(fn: Callable) -> Callable:
-    """ Returns the real experiment on rank 0 and otherwise the DummyExperiment. """
-    @wraps(fn)
-    def experiment(self):
-        @rank_zero_only
-        def get_experiment():
-            return fn(self)
-        return get_experiment() or DummyExperiment()
-    return experiment

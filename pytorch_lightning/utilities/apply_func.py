@@ -1,3 +1,17 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import importlib
 from abc import ABC
 from collections.abc import Mapping, Sequence
@@ -99,7 +113,9 @@ def move_data_to_device(batch: Any, device: torch.device):
 
             # Shallow copy because each Batch has a reference to Dataset which contains all examples
             device_data = copy(data)
-            for field in data.fields:
+            for field, field_value in data.dataset.fields.items():
+                if field_value is None:
+                    continue
                 device_field = move_data_to_device(getattr(data, field), device)
                 setattr(device_data, field, device_field)
             return device_data
@@ -107,4 +123,5 @@ def move_data_to_device(batch: Any, device: torch.device):
         kwargs = dict(non_blocking=True) if isinstance(data, torch.Tensor) else {}
         return data.to(device, **kwargs)
 
-    return apply_to_collection(batch, dtype=(TransferableDataType, Batch), function=batch_to)
+    dtype = (TransferableDataType, Batch) if TORCHTEXT_AVAILABLE else TransferableDataType
+    return apply_to_collection(batch, dtype=dtype, function=batch_to)

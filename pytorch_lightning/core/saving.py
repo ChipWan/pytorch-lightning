@@ -1,24 +1,39 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import ast
 import csv
 import inspect
 import os
 from argparse import Namespace
-from typing import Union, Dict, Any, Optional, Callable, MutableMapping
+from typing import Union, Dict, Any, Optional, Callable, MutableMapping, IO
+from warnings import warn
 
 import torch
 import yaml
 
 from pytorch_lightning import _logger as log
-from pytorch_lightning.utilities import rank_zero_warn, AttributeDict
+from pytorch_lightning.utilities import rank_zero_warn, AttributeDict, OMEGACONF_AVAILABLE
 from pytorch_lightning.utilities.cloud_io import load as pl_load
-from pytorch_lightning.utilities.cloud_io import gfile, cloud_open
+from pytorch_lightning.utilities.cloud_io import get_filesystem
+from pytorch_lightning.utilities.parsing import parse_class_init_keys
 
 PRIMITIVE_TYPES = (bool, int, float, str)
 ALLOWED_CONFIG_TYPES = (AttributeDict, MutableMapping, Namespace)
-try:
+
+if OMEGACONF_AVAILABLE:
     from omegaconf import OmegaConf
-except ImportError:
-    OmegaConf = None
 
 # the older shall be on the top
 CHECKPOINT_PAST_HPARAMS_KEYS = (
@@ -34,22 +49,21 @@ class ModelIO(object):
 
     @classmethod
     def load_from_checkpoint(
-            cls,
-            checkpoint_path: str,
-            *args,
-            map_location: Optional[Union[Dict[str, str], str, torch.device, int, Callable]] = None,
-            hparams_file: Optional[str] = None,
-            **kwargs
+        cls,
+        checkpoint_path: Union[str, IO],
+        map_location: Optional[Union[Dict[str, str], str, torch.device, int, Callable]] = None,
+        hparams_file: Optional[str] = None,
+        strict: bool = True,
+        **kwargs,
     ):
         r"""
         Primary way of loading a model from a checkpoint. When Lightning saves a checkpoint
-        it stores the arguments passed to `__init__`  in the checkpoint under `module_arguments`
+        it stores the arguments passed to `__init__`  in the checkpoint under `hyper_parameters`
 
-        Any arguments specified through \*args and \*\*kwargs will override args stored in `hparams`.
+        Any arguments specified through \*args and \*\*kwargs will override args stored in `hyper_parameters`.
 
         Args:
-            checkpoint_path: Path to checkpoint. This can also be a URL.
-            args: Any positional args needed to init the model.
+            checkpoint_path: Path to checkpoint. This can also be a URL, or file-like object
             map_location:
                 If your checkpoint saved a GPU model and you now load on CPUs
                 or a different number of GPUs, use this to map to the new setup.
@@ -71,8 +85,10 @@ class ModelIO(object):
                 If your model's `hparams` argument is :class:`~argparse.Namespace`
                 and .yaml file has hierarchical structure, you need to refactor your model to treat
                 `hparams` as :class:`~dict`.
-            hparam_overrides: A dictionary with keys to override in the hparams
-            kwargs: Any keyword args needed to init the model.
+            strict: Whether to strictly enforce that the keys in :attr:`checkpoint_path` match the keys
+                returned by this module's state dict. Default: `True`.
+            kwargs: Any extra keyword args needed to init the model. Can also be used to override saved
+                hyperparameter values.
 
         Return:
             :class:`LightningModule` with loaded weights and hyperparameters (if available).
@@ -133,49 +149,53 @@ class ModelIO(object):
         # override the hparams with values that were passed in
         checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY].update(kwargs)
 
-        model = cls._load_model_state(checkpoint, *args, **kwargs)
+        model = cls._load_model_state(checkpoint, strict=strict, **kwargs)
         return model
 
     @classmethod
-    def _load_model_state(cls, checkpoint: Dict[str, Any], *cls_args, **cls_kwargs):
+    def _load_model_state(cls, checkpoint: Dict[str, Any], strict: bool = True, **cls_kwargs_new):
         cls_spec = inspect.getfullargspec(cls.__init__)
-        cls_init_args_name = inspect.signature(cls).parameters.keys()
+        cls_init_args_name = inspect.signature(cls.__init__).parameters.keys()
+
+        self_var, args_var, kwargs_var = parse_class_init_keys(cls)
+        drop_names = [n for n in (self_var, args_var, kwargs_var) if n]
+        cls_init_args_name = list(filter(lambda n: n not in drop_names, cls_init_args_name))
+
+        cls_kwargs_loaded = {}
         # pass in the values we saved automatically
         if cls.CHECKPOINT_HYPER_PARAMS_KEY in checkpoint:
-            model_args = {}
 
-            # add some back compatibility, the actual one shall be last
-            for hparam_key in CHECKPOINT_PAST_HPARAMS_KEYS + (cls.CHECKPOINT_HYPER_PARAMS_KEY,):
-                if hparam_key in checkpoint:
-                    model_args.update(checkpoint[hparam_key])
+            # 1. (backward compatibility) Try to restore model hparams from checkpoint using old/past keys
+            for _old_hparam_key in CHECKPOINT_PAST_HPARAMS_KEYS:
+                cls_kwargs_loaded.update(checkpoint.get(_old_hparam_key, {}))
 
-            model_args = _convert_loaded_hparams(model_args, checkpoint.get(cls.CHECKPOINT_HYPER_PARAMS_TYPE))
+            # 2. Try to restore model hparams from checkpoint using the new key
+            _new_hparam_key = cls.CHECKPOINT_HYPER_PARAMS_KEY
+            cls_kwargs_loaded.update(checkpoint.get(_new_hparam_key))
 
+            # 3. Ensure that `cls_kwargs_old` has the right type, back compatibility between dict and Namespace
+            cls_kwargs_loaded = _convert_loaded_hparams(cls_kwargs_loaded, checkpoint.get(cls.CHECKPOINT_HYPER_PARAMS_TYPE))
+
+            # 4. Update cls_kwargs_new with cls_kwargs_old, such that new has higher priority
             args_name = checkpoint.get(cls.CHECKPOINT_HYPER_PARAMS_NAME)
+            if args_name and args_name in cls_init_args_name:
+                cls_kwargs_loaded = {args_name: cls_kwargs_loaded}
 
-            if args_name == 'kwargs':
-                # in case the class cannot take any extra argument filter only the possible
-                cls_kwargs.update(**model_args)
-            elif args_name:
-                if args_name in cls_init_args_name:
-                    cls_kwargs.update({args_name: model_args})
-            else:
-                cls_args = (model_args,) + cls_args
+        _cls_kwargs = {}
+        _cls_kwargs.update(cls_kwargs_loaded)
+        _cls_kwargs.update(cls_kwargs_new)
 
         if not cls_spec.varkw:
             # filter kwargs according to class init unless it allows any argument via kwargs
-            cls_kwargs = {k: v for k, v in cls_kwargs.items() if k in cls_init_args_name}
+            _cls_kwargs = {k: v for k, v in _cls_kwargs.items() if k in cls_init_args_name}
 
-        # prevent passing positional arguments if class does not accept any
-        if len(cls_spec.args) <= 1 and not cls_spec.varargs and not cls_spec.kwonlyargs:
-            cls_args, cls_kwargs = [], {}
-
-        model = cls(*cls_args, **cls_kwargs)
-        # load the state_dict on the model automatically
-        model.load_state_dict(checkpoint['state_dict'])
+        model = cls(**_cls_kwargs)
 
         # give model a chance to load something
         model.on_load_checkpoint(checkpoint)
+
+        # load the state_dict on the model automatically
+        model.load_state_dict(checkpoint['state_dict'], strict=strict)
 
         return model
 
@@ -219,8 +239,8 @@ class ModelIO(object):
         """
 
 
-def _convert_loaded_hparams(model_args: dict, hparams_type: Union[Callable, str] = None) -> object:
-    """Convert hparams according given type in callable or string (past) format"""
+def _convert_loaded_hparams(model_args: dict, hparams_type: Optional[Union[Callable, str]] = None) -> object:
+    """Convert hparams according given type in callable or string (past) format."""
     # if not hparams type define
     if not hparams_type:
         return model_args
@@ -273,11 +293,12 @@ def load_hparams_from_tags_csv(tags_csv: str) -> Dict[str, Any]:
     True
     >>> os.remove(path_csv)
     """
-    if not gfile.exists(tags_csv):
+    fs = get_filesystem(tags_csv)
+    if not fs.exists(tags_csv):
         rank_zero_warn(f"Missing Tags: {tags_csv}.", RuntimeWarning)
         return {}
 
-    with cloud_open(tags_csv, "r", newline="") as fp:
+    with fs.open(tags_csv, "r", newline="") as fp:
         csv_reader = csv.reader(fp, delimiter=",")
         tags = {row[0]: convert(row[1]) for row in list(csv_reader)[1:]}
 
@@ -285,13 +306,14 @@ def load_hparams_from_tags_csv(tags_csv: str) -> Dict[str, Any]:
 
 
 def save_hparams_to_tags_csv(tags_csv: str, hparams: Union[dict, Namespace]) -> None:
-    if not gfile.isdir(os.path.dirname(tags_csv)):
+    fs = get_filesystem(tags_csv)
+    if not fs.isdir(os.path.dirname(tags_csv)):
         raise RuntimeError(f"Missing folder: {os.path.dirname(tags_csv)}.")
 
     if isinstance(hparams, Namespace):
         hparams = vars(hparams)
 
-    with cloud_open(tags_csv, "w", newline="") as fp:
+    with fs.open(tags_csv, "w", newline="") as fp:
         fieldnames = ["key", "value"]
         writer = csv.DictWriter(fp, fieldnames=fieldnames)
         writer.writerow({"key": "key", "value": "value"})
@@ -310,12 +332,13 @@ def load_hparams_from_yaml(config_yaml: str) -> Dict[str, Any]:
     True
     >>> os.remove(path_yaml)
     """
-    if not gfile.exists(config_yaml):
+    fs = get_filesystem(config_yaml)
+    if not fs.exists(config_yaml):
         rank_zero_warn(f"Missing Tags: {config_yaml}.", RuntimeWarning)
         return {}
 
-    with cloud_open(config_yaml, "r") as fp:
-        tags = yaml.load(fp)
+    with fs.open(config_yaml, "r") as fp:
+        tags = yaml.full_load(fp)
 
     return tags
 
@@ -326,7 +349,8 @@ def save_hparams_to_yaml(config_yaml, hparams: Union[dict, Namespace]) -> None:
         config_yaml: path to new YAML file
         hparams: parameters to be saved
     """
-    if not gfile.isdir(os.path.dirname(config_yaml)):
+    fs = get_filesystem(config_yaml)
+    if not fs.isdir(os.path.dirname(config_yaml)):
         raise RuntimeError(f"Missing folder: {os.path.dirname(config_yaml)}.")
 
     # convert Namespace or AD to dict
@@ -336,19 +360,33 @@ def save_hparams_to_yaml(config_yaml, hparams: Union[dict, Namespace]) -> None:
         hparams = dict(hparams)
 
     # saving with OmegaConf objects
-    if OmegaConf is not None:
+    if OMEGACONF_AVAILABLE:
         if OmegaConf.is_config(hparams):
-            OmegaConf.save(hparams, config_yaml, resolve=True)
+            with fs.open(config_yaml, "w", encoding="utf-8") as fp:
+                OmegaConf.save(hparams, fp, resolve=True)
             return
         for v in hparams.values():
             if OmegaConf.is_config(v):
-                OmegaConf.save(OmegaConf.create(hparams), config_yaml, resolve=True)
+                with fs.open(config_yaml, "w", encoding="utf-8") as fp:
+                    OmegaConf.save(OmegaConf.create(hparams), fp, resolve=True)
                 return
 
-    # saving the standard way
     assert isinstance(hparams, dict)
-    with open(config_yaml, 'w', newline='') as fp:
-        yaml.dump(hparams, fp)
+    hparams_allowed = {}
+    # drop paramaters which contain some strange datatypes as fsspec
+    for k, v in hparams.items():
+        try:
+            yaml.dump(v)
+        except TypeError as err:
+            warn(f"Skipping '{k}' parameter because it is not possible to safely dump to YAML.")
+            hparams[k] = type(v).__name__
+        else:
+            hparams_allowed[k] = v
+
+    # saving the standard way
+    with fs.open(config_yaml, "w", newline="") as fp:
+        yaml.dump(hparams_allowed, fp)
+
 
 def convert(val: str) -> Union[int, float, bool, str]:
     try:

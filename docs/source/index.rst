@@ -6,28 +6,64 @@
 PyTorch Lightning Documentation
 ===============================
 
+
 .. toctree::
    :maxdepth: 1
    :name: start
-   :caption: Start Here
+   :caption: Getting started
 
    new-project
-   introduction_guide
+   converting
+   rapid_prototyping_templates
+
+.. toctree::
+   :maxdepth: 1
+   :name: guides
+   :caption: Best practices
+
+   style_guide
    performance
+   Lightning project template<https://github.com/PyTorchLightning/pytorch-lightning-conference-seed>
+   benchmarking
+
+
+.. toctree::
+   :maxdepth: 2
+   :name: pl_docs
+   :caption: Lightning API
+
+   lightning_module
+   trainer
 
 .. toctree::
    :maxdepth: 2
    :name: docs
-   :caption: Python API
+   :caption: Optional extensions
 
+   accelerators
    callbacks
-   lightning-module
    datamodules
-   loggers
+   logging
    metrics
-   hooks
-   results
-   trainer
+   plugins
+
+
+.. toctree::
+   :maxdepth: 1
+   :name: Tutorials
+   :caption: Tutorials
+
+   introduction_guide
+   PyTorch Lightning 101 class <https://www.youtube.com/playlist?list=PLaMu-SDt_RB5NUm67hU2pdE75j6KaIOv2>
+   From PyTorch to PyTorch Lightning [Blog] <https://towardsdatascience.com/from-pytorch-to-pytorch-lightning-a-gentle-introduction-b371b7caaf09>
+   From PyTorch to PyTorch Lightning [Video] <https://www.youtube.com/watch?v=QHww1JH7IDU>
+
+.. toctree::
+   :maxdepth: 2
+   :name: api
+   :caption: API References
+
+   api_references
 
 .. toctree::
    :maxdepth: 1
@@ -38,57 +74,33 @@ PyTorch Lightning Documentation
 
 .. toctree::
    :maxdepth: 1
-   :name: Community Examples
-   :caption: Community Examples
+   :name: Examples
+   :caption: Examples
 
-   Contextual Emotion Detection (DoubleDistilBert) <https://github.com/PyTorchLightning/emotion_transformer>
-   Cotatron: Transcription-Guided Speech Encoder <https://github.com/mindslab-ai/cotatron>
-   FasterRCNN object detection + Hydra <https://github.com/PyTorchLightning/wheat>
-   Hyperparameter optimization with Optuna <https://github.com/optuna/optuna/blob/master/examples/pytorch_lightning_simple.py>
-   Hyperparameter optimization with Ray Tune <https://docs.ray.io/en/master/tune/tutorials/tune-pytorch-lightning.html>
-   Image Inpainting using Partial Convolutions <https://github.com/ryanwongsa/Image-Inpainting>
-   MNIST on TPU <https://colab.research.google.com/drive/1-_LKx4HwAxl5M6xPJmqAAu444LTDQoa3#scrollTo=BHBz1_AnamN_>
-   NER (transformers, TPU) <https://colab.research.google.com/drive/1dBN-wwYUngLYVt985wGs_OKPlK_ANB9D>
-   NeuralTexture (CVPR) <https://github.com/PyTorchLightning/neuraltexture>
-   Recurrent Attentive Neural Process <https://github.com/PyTorchLightning/attentive-neural-processes>
-   Siamese Nets for One-shot Image Recognition <https://github.com/PyTorchLightning/Siamese-Neural-Networks>
-   Speech Transformers <https://github.com/PyTorchLightning/speech-transformer-pytorch_lightning>
-   Transformers transfer learning (Huggingface) <https://colab.research.google.com/drive/1F_RNcHzTfFuQf-LeKvSlud6x7jXYkG31#scrollTo=yr7eaxkF-djf>
-   Transformers text classification <https://github.com/ricardorei/lightning-text-classification>
-   VAE Library of over 18+ VAE flavors <https://github.com/AntixK/PyTorch-VAE>
-   Transformers Question Answering (SQuAD) <https://github.com/tshrjn/Finetune-QA/>
-   Atlas: End-to-End 3D Scene Reconstruction from Posed Images <https://github.com/magicleap/atlas>
-
-.. toctree::
-   :maxdepth: 1
-   :name: Tutorials
-   :caption: Tutorials
-
-   PyTorch Lightning 101 class <https://www.youtube.com/playlist?list=PLaMu-SDt_RB5NUm67hU2pdE75j6KaIOv2>
-   From PyTorch to PyTorch Lightning <https://towardsdatascience.com/from-pytorch-to-pytorch-lightning-a-gentle-introduction-b371b7caaf09>
-   Video on how to refactor PyTorch into PyTorch Lightning <https://www.youtube.com/watch?v=QHww1JH7IDU>
-
-.. toctree::
-   :maxdepth: 1
-   :name: project structure
-   :caption: Recommended Lightning Project Layout
-
-   Lightning project seed <https://github.com/PyTorchLightning/pytorch-lightning-conference-seed>
+   pytorch_ecoystem
+   community_examples
+   Autoencoder <https://pytorch-lightning-bolts.readthedocs.io/en/latest/autoencoders.html#autoencoders>
+   BYOL <https://pytorch-lightning-bolts.readthedocs.io/en/latest/self_supervised_models.html#byol>
+   DQN <https://pytorch-lightning-bolts.readthedocs.io/en/latest/reinforce_learn.html#deep-q-network-dqn>
+   GAN <https://pytorch-lightning-bolts.readthedocs.io/en/latest/gans.html#basic-gan>
+   GPT-2 <https://pytorch-lightning-bolts.readthedocs.io/en/latest/convolutional.html#gpt-2>
+   Image-GPT <https://pytorch-lightning-bolts.readthedocs.io/en/latest/convolutional.html#image-gpt>
+   SimCLR <https://pytorch-lightning-bolts.readthedocs.io/en/latest/self_supervised_models.html#simclr>
+   VAE <https://pytorch-lightning-bolts.readthedocs.io/en/latest/autoencoders.html#basic-vae>
 
 .. toctree::
    :maxdepth: 1
    :name: Common Use Cases
    :caption: Common Use Cases
 
-   apex
+   cloud_training
+   amp
    slurm
    child_modules
    debugging
-   experiment_logging
-   experiment_reporting
+   loggers
    early_stopping
    fast_training
-   hooks
    hyperparameters
    lr_finder
    multi_gpu
@@ -106,6 +118,13 @@ PyTorch Lightning Documentation
 
 .. toctree::
    :maxdepth: 1
+   :name: Partner Domain Frameworks
+   :caption: Partner Domain Frameworks
+
+   asr_nlp_tts
+
+.. toctree::
+   :maxdepth: 1
    :name: community
    :caption: Community
 
@@ -114,25 +133,10 @@ PyTorch Lightning Documentation
    CONTRIBUTING.md
    BECOMING_A_CORE_CONTRIBUTOR.md
    governance.md
+   CHANGELOG.md
 
 Indices and tables
 ------------------
 
 * :ref:`genindex`
-* :ref:`modindex`
 * :ref:`search`
-
-
-
-.. This is here to make sphinx aware of the modules but not throw an error/warning
-.. toctree::
-   :hidden:
-
-   api/pytorch_lightning.core
-   api/pytorch_lightning.callbacks
-   api/pytorch_lightning.loggers
-   api/pytorch_lightning.metrics
-   api/pytorch_lightning.overrides
-   api/pytorch_lightning.profiler
-   api/pytorch_lightning.trainer
-   api/pytorch_lightning.utilities

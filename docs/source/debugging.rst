@@ -2,24 +2,38 @@
 
     from pytorch_lightning.trainer.trainer import Trainer
 
+.. _debugging:
+
 Debugging
 =========
+
+.. raw:: html
+
+    <video width="50%" max-width="400px" controls
+    poster="https://pl-bolts-doc-images.s3.us-east-2.amazonaws.com/pl_docs/trainer_flags/yt_thumbs/thumb_debugging.png"
+    src="https://pl-bolts-doc-images.s3.us-east-2.amazonaws.com/pl_docs/yt/Trainer+flags+7-+debugging_1.mp4"></video>
+
+|
+
 The following are flags that make debugging much easier.
 
 ----------------
 
 fast_dev_run
 ------------
-This flag runs a "unit test" by running 1 training batch and 1 validation batch.
-The point is to detect any bugs in the training/validation loop without having to wait for
-a full epoch to crash.
+This flag runs a "unit test" by running n if set to ``n`` (int) else 1 if set to ``True`` training and validation batch(es).
+The point is to detect any bugs in the training/validation loop without having to wait for a full epoch to crash.
 
 (See: :paramref:`~pytorch_lightning.trainer.trainer.Trainer.fast_dev_run`
 argument of :class:`~pytorch_lightning.trainer.trainer.Trainer`)
 
 .. testcode::
-
+    
+    # runs 1 train, val, test batch and program ends
     trainer = Trainer(fast_dev_run=True)
+
+    # runs 7 train, val, test batches and program ends
+    trainer = Trainer(fast_dev_run=7)
 
 ----------------
 
@@ -64,8 +78,8 @@ argument of :class:`~pytorch_lightning.trainer.trainer.Trainer`)
     # use only 1% of training data (and use the same training dataloader (with shuffle off) in val and test)
     trainer = Trainer(overfit_batches=0.01)
 
-    # or overfit a number of batches
-    trainer = Trainer(overfit_batches=0.01)
+    # similar, but with a fixed 10 batches no matter the size of the dataset
+    trainer = Trainer(overfit_batches=10)
 
 With this flag, the train, val, and test sets will all be the same train set. We will also replace the sampler
 in the training set to turn off shuffle for you.
@@ -91,7 +105,7 @@ You can also display the intermediate input- and output sizes of all your layers
     --------------------------------------------------------------
     0 | net   | Sequential  | 132 K  | [10, 256] | [10, 512]
     1 | net.0 | Linear      | 131 K  | [10, 256] | [10, 512]
-    2 | net.1 | BatchNorm1d | 1 K    | [10, 512] | [10, 512]
+    2 | net.1 | BatchNorm1d | 1.0 K    | [10, 512] | [10, 512]
 
 when you call ``.fit()`` on the Trainer. This can help you find bugs in the composition of your layers.
 

@@ -1,3 +1,17 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Module to describe gradients
 """
@@ -32,11 +46,11 @@ class GradInformation(Module):
                 continue
 
             param_norm = float(p.grad.data.norm(norm_type))
-            norms[f'grad_{norm_type}_norm_{name}'] = round(param_norm, 3)
+            norms[f'grad_{norm_type}_norm_{name}'] = round(param_norm, 4)
 
             all_norms.append(param_norm)
 
         total_norm = float(torch.tensor(all_norms).norm(norm_type))
-        norms[f'grad_{norm_type}_norm_total'] = round(total_norm, 3)
+        norms[f'grad_{norm_type}_norm_total'] = round(total_norm, 4)
 
         return norms

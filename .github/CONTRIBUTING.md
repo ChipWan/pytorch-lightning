@@ -60,22 +60,23 @@ Have a favorite feature from other libraries like fast.ai or transformers? Those
 
 We are always looking for help implementing new features or fixing bugs.
 
-A lot of good work has already been done in project mechanics (requirements/base.txt, setup.py, pep8, badges, ci, etc...) so we're in a good state there thanks to all the early contributors (even pre-beta release)!
+A lot of good work has already been done in project mechanics (requirements.txt, setup.py, pep8, badges, ci, etc...) so we're in a good state there thanks to all the early contributors (even pre-beta release)!
 
 ### Bug Fixes:
 
 1. If you find a bug please submit a github issue.
 
-- Make sure the title explains the issue.
-- Describe your setup, what you are trying to do, expected vs. actual behaviour. Please add configs and code samples.
-- Add details on how to reproduce the issue - a minimal test case is always best, colab is also great.
-  Note, that the sample code shall be minimal and if needed with publicly available data.
+   - Make sure the title explains the issue.
+   - Describe your setup, what you are trying to do, expected vs. actual behaviour. Please add configs and code samples.
+   - Add details on how to reproduce the issue - a minimal test case is always best, colab is also great.
+     Note, that the sample code shall be minimal and if needed with publicly available data.
 
-2. Try to fix it or recommend a solution...
-   We highly recommend to use test-driven approach:
+2. Try to fix it or recommend a solution. We highly recommend to use test-driven approach:
+
    - Convert your minimal code example to a unit/integration test with assert on expected results.
    - Start by debugging the issue... You can run just this particular test in your IDE and draft a fix.
    - Verify that your test case fails on the master branch and only passes with the fix applied.
+
 3. Submit a PR!
 
 _**Note**, even if you do not find the solution, sending a PR with a test covering the issue is a valid contribution and we can help you or finish it with you :]_
@@ -84,15 +85,14 @@ _**Note**, even if you do not find the solution, sending a PR with a test coveri
 
 1. Submit a github issue - describe what is the motivation of such feature (adding the use case or an example is helpful).
 2. Let's discuss to determine the feature scope.
-3. Submit a PR!
-   We recommend test driven approach to adding new features as well:
+3. Submit a PR! We recommend test driven approach to adding new features as well:
 
-- Write a test for the functionality you want to add.
-- Write the functional code until the test passes.
+   - Write a test for the functionality you want to add.
+   - Write the functional code until the test passes.
 
 4. Add/update the relevant tests!
 
-- [This PR](https://github.com/PyTorchLightning/pytorch-lightning/pull/2671) is a good example for adding a new metric, and [this one for a new logger](https://github.com/PyTorchLightning/pytorch-lightning/pull/2721)
+- [This PR](https://github.com/PyTorchLightning/pytorch-lightning/pull/2671) is a good example for adding a new metric, and [this one for a new logger](https://github.com/PyTorchLightning/pytorch-lightning/pull/2721).
 
 ### Test cases:
 
@@ -112,8 +112,8 @@ In case you adding new dependencies, make sure that they are compatible with the
 
 ### Coding Style
 
-1. Use f-strings for output formation (except logging when we stay with lazy `logging.info("Hello %s!`, name);
-2. Black code formatter is used using `pre-commit` hook.
+1. Use f-strings for output formation (except logging when we stay with lazy `logging.info("Hello %s!", name)`.
+2. Black code formatter is used using a `pre-commit` hook.
 
 ### Documentation
 
@@ -182,10 +182,10 @@ python -m pip install ".[dev, examples]"
 python -m pip install pre-commit
 ```
 
-You can run the full test-case in your terminal via this bash script:
+You can run the full test-case in your terminal via this make script:
 
 ```bash
-bash .run_local_tests.sh
+make test
 ```
 
 Note: if your computer does not have multi-GPU nor TPU these tests are skipped.
@@ -194,6 +194,7 @@ Note: if your computer does not have multi-GPU nor TPU these tests are skipped.
 This is useful if you do not test against all required dependency versions.
 
 **Docker:** Another option is utilize the [pytorch lightning cuda base docker image](https://hub.docker.com/repository/docker/pytorchlightning/pytorch_lightning/tags?page=1&name=cuda). You can then run:
+
 ```bash
 python -m pytest pytorch_lightning tests pl_examples -v --flake8
 ```
@@ -233,13 +234,13 @@ We welcome any useful contribution! For your convenience here's a recommended wo
 3. **How to rebase my PR?**
 
    We recommend creating a PR in separate branch other than `master`, especially if you plan submitting several changes and do not want to wait until the first one is resolved (we can work on them in parallel).
-   
+
    First, make sure you have set [upstream](https://help.github.com/en/github/collaborating-with-issues-and-pull-requests/configuring-a-remote-for-a-fork) by running:
 
    ```bash
    git remote add upstream https://github.com/PyTorchLightning/pytorch-lightning.git
    ```
-   
+
    You'll know its set up right if you run `git remote -v` and see something similar to this:
 
    ```bash
@@ -248,8 +249,9 @@ We welcome any useful contribution! For your convenience here's a recommended wo
    upstream        https://github.com/PyTorchLightning/pytorch-lightning.git (fetch)
    upstream        https://github.com/PyTorchLightning/pytorch-lightning.git (push)
    ```
-   
+
    Now you can update your master with upstream's master by running:
+
    ```bash
    git fetch --all --prune
    git checkout master
@@ -257,20 +259,73 @@ We welcome any useful contribution! For your convenience here's a recommended wo
    ```
 
    Finally, checkout your feature branch and rebase it with master before pushing up your feature branch:
+
    ```bash
    git checkout my-PR-branch
    git rebase master
    # follow git instructions to resolve conflicts
    git push -f
    ```
-   
+
    Eventually, you can perform the rebasing directly from upstream after setting it up:
+
    ```bash
    git fetch --all --prune
    git rebase upstream/master
    # follow git instructions to resolve conflicts
    git push -f
    ```
+
+4. **How to add new tests**
+
+We are using [pytest](https://docs.pytest.org/en/stable/) in Pytorch Lightning.
+
+Here are tutorials:
+* (recommended) [Visual Testing with pytest](https://www.youtube.com/playlist?list=PLCTHcU1KoD99Rim2tzg-IhYY2iu9FFvNo) from JetBrains on YouTube
+* [Effective Python Testing With Pytest](https://realpython.com/pytest-python-testing/) article on realpython.com
+
+Here is the process to create a new test
+
+* 0. Optional: Follow tutorials !
+* 1. Find a file in tests/ which match what you want to test. If none, create one.
+* 2. Use this template to get started !
+* 3. Use `BoringModel and derivates to test out your code`.
+
+```python
+# TEST SHOULD BE IN YOUR FILE: tests/..../...py
+
+# RUN OUR TEST WITH: pytest tests/..../...py::test_explain_what_is_being_tested --verbose --capture=no
+
+# TEST CODE TEMPLATE
+
+# pytest decorator
+# @pytest.mark.skipif(not torch.cuda.is_available(), reason="test requires GPU machine")
+def test_explain_what_is_being_tested(tmpdir):
+    """
+    Test description about text reason to be
+    """
+
+    # os.environ["PL_DEV_DEBUG"] = '1' optional. When activated, you can use internal trainer.dev_debugger
+
+    class ExtendedModel(BoringModel):
+        ...
+
+    model = ExtendedModel()
+
+    # BoringModel is a functional model. You might want to set methods to None to test your behaviour
+    # Example: model.training_step_end = None
+
+    trainer = Trainer(
+        default_root_dir=tmpdir, # will save everything within a tmpdir generated for this test
+        ...
+    )
+    trainer.fit(model)
+    result = trainer.test()
+
+    # assert the behaviour is correct.
+    assert ...
+    assert ...
+```
 
 ### Bonus Workflow Tip
 
@@ -302,6 +357,7 @@ plrebase (){
 ```
 
 Now, you can:
-  - clone your fork and set up upstream by running `plclone` from your terminal
-  - fetch upstream and update your local master branch with it by running `plfetch`
-  - rebase your feature branch (after running `plfetch`) by running `plrebase your-branch-name`
+
+- clone your fork and set up upstream by running `plclone` from your terminal
+- fetch upstream and update your local master branch with it by running `plfetch`
+- rebase your feature branch (after running `plfetch`) by running `plrebase your-branch-name`

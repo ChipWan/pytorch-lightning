@@ -1,73 +1,33 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import multiprocessing
 import platform
-from abc import ABC, abstractmethod
-from distutils.version import LooseVersion
-from typing import Union, List, Tuple, Callable, Optional
+from abc import ABC
+from copy import deepcopy
+from typing import Callable, Iterable, List, Optional, Tuple, Union
 
-import torch
-import torch.distributed as torch_distrib
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 
+from pytorch_lightning.accelerators.accelerator import Accelerator
 from pytorch_lightning.core import LightningModule
 from pytorch_lightning.utilities import rank_zero_warn
+from pytorch_lightning.utilities.data import has_iterable_dataset, has_len
+from pytorch_lightning.utilities.debugging import InternalDebugger
 from pytorch_lightning.utilities.exceptions import MisconfigurationException
-
-try:
-    from torch.utils.data import IterableDataset
-    ITERABLE_DATASET_EXISTS = True
-except ImportError:
-    ITERABLE_DATASET_EXISTS = False
-
-try:
-    from apex import amp
-except ImportError:
-    amp = None
-
-try:
-    import torch_xla
-    import torch_xla.core.xla_model as xm
-    import torch_xla.distributed.xla_multiprocessing as xmp
-except ImportError:
-    XLA_AVAILABLE = False
-else:
-    XLA_AVAILABLE = True
-
-try:
-    import horovod.torch as hvd
-except (ModuleNotFoundError, ImportError):
-    HOROVOD_AVAILABLE = False
-else:
-    HOROVOD_AVAILABLE = True
-
-
-def _has_iterable_dataset(dataloader: DataLoader):
-    return ITERABLE_DATASET_EXISTS and hasattr(dataloader, 'dataset') \
-        and isinstance(dataloader.dataset, IterableDataset)
-
-
-def _has_len(dataloader: DataLoader) -> bool:
-    """ Checks if a given Dataloader has __len__ method implemented i.e. if
-    it is a finite dataloader or infinite dataloader. """
-
-    try:
-        # try getting the length
-        if len(dataloader) == 0:
-            raise ValueError('`Dataloader` returned 0 length.'
-                             ' Please make sure that your Dataloader at least returns 1 batch')
-        has_len = True
-    except TypeError:
-        has_len = False
-    except NotImplementedError:  # e.g. raised by torchtext if a batch_size_fn is used
-        has_len = False
-
-    if has_len and _has_iterable_dataset(dataloader) and LooseVersion(torch.__version__) >= LooseVersion("1.4.0"):
-        rank_zero_warn(
-            'Your `IterableDataset` has `__len__` defined.'
-            ' In combination with multi-processing data loading (e.g. batch size > 1),'
-            ' this can lead to unintended side effects since the samples will be duplicated.'
-        )
-    return has_len
+from pytorch_lightning.utilities.model_utils import is_overridden
 
 
 class TrainerDataLoadingMixin(ABC):
@@ -93,30 +53,28 @@ class TrainerDataLoadingMixin(ABC):
     limit_val_batches: Union[int, float]
     limit_test_batches: Union[int, float]
     replace_sampler_ddp: bool
+    accelerator_backend: Accelerator
     num_nodes: int
     num_processes: int
     distributed_backend: Optional[str]
-
-    @abstractmethod
-    def is_overridden(self, *args):
-        """Warning: this is just empty shell for code implemented in other class."""
+    dev_debugger: InternalDebugger
 
     def _worker_check(self, dataloader: DataLoader, name: str) -> None:
         on_windows = platform.system() == 'Windows'
 
         # ddp_spawn + num_workers > 0 don't mix! tell the user
         is_dataloader = isinstance(dataloader, DataLoader)
-        using_spawn = self.distributed_backend == 'ddp_spawn'
+        using_spawn = self.distributed_backend == "ddp_spawn"
         if is_dataloader and not on_windows:
             if dataloader.num_workers > 0 and using_spawn:
                 rank_zero_warn('Dataloader(num_workers>0) and ddp_spawn do not mix well!'
                                ' Your performance might suffer dramatically.'
-                               ' Please consider setting distributed_backend=ddp to use num_workers > 0'
+                               ' Please consider setting accelerator=ddp to use num_workers > 0'
                                ' (this is a bottleneck of Python .spawn() and PyTorch')
 
             elif dataloader.num_workers == 0 and using_spawn:
-                rank_zero_warn('You are using `distributed_backend=ddp_spawn` with num_workers=0.'
-                               ' For much faster performance, switch to `distributed_backend=ddp`'
+                rank_zero_warn('You are using `accelerator=ddp_spawn` with num_workers=0.'
+                               ' For much faster performance, switch to `accelerator=ddp`'
                                ' and set `num_workers>0`')
 
             elif dataloader.num_workers <= 2 and multiprocessing.cpu_count() > 2 and not using_spawn:
@@ -126,17 +84,17 @@ class TrainerDataLoadingMixin(ABC):
                                f' (try {num_cpus} which is the number of cpus on this machine)'
                                ' in the `DataLoader` init to improve performance.')
 
-    def auto_add_sampler(self, dataloader: DataLoader, train: bool) -> DataLoader:
+    def auto_add_sampler(self, dataloader: DataLoader, shuffle: bool) -> DataLoader:
 
         # don't do anything if it's not a dataloader
         is_dataloader = isinstance(dataloader, DataLoader)
         # don't manipulate iterable datasets
-        is_iterable_ds = _has_iterable_dataset(dataloader)
+        is_iterable_ds = has_iterable_dataset(dataloader)
 
         if not is_dataloader or is_iterable_ds:
             return dataloader
-        need_dist_sampler = (self.use_ddp or self.use_ddp2 or self.use_horovod or self.use_tpu)
 
+        need_dist_sampler = self.require_distributed_sampler and not isinstance(dataloader.sampler, DistributedSampler)
         if self.replace_sampler_ddp and need_dist_sampler:
             if not isinstance(dataloader.sampler, (SequentialSampler, RandomSampler)):
                 raise MisconfigurationException(
@@ -146,7 +104,7 @@ class TrainerDataLoadingMixin(ABC):
                     ' `replace_sampler_ddp`=False if you want to use your custom sampler.')
 
             # replace with distributed sampler
-            sampler = self._get_distributed_sampler(dataloader, train)
+            sampler = self._get_distributed_sampler(dataloader, shuffle)
             dataloader = self.replace_sampler(dataloader, sampler)
 
         return dataloader
@@ -159,25 +117,15 @@ class TrainerDataLoadingMixin(ABC):
         }
 
         dl_args['sampler'] = sampler
+        dl_args['shuffle'] = False
+        multiprocessing_context = dataloader.multiprocessing_context
         dataloader = type(dataloader)(**dl_args)
+        dataloader.multiprocessing_context = multiprocessing_context
         return dataloader
 
-    def _get_distributed_sampler(self, dataloader, train):
-        if self.use_tpu:
-            kwargs = dict(num_replicas=xm.xrt_world_size(), rank=xm.get_ordinal())
-        elif self.use_horovod:
-            kwargs = dict(num_replicas=hvd.size(), rank=hvd.rank())
-        else:
-            world_size = {
-                'ddp': self.num_nodes * self.num_processes,
-                'ddp_spawn': self.num_nodes * self.num_processes,
-                'ddp2': self.num_nodes,
-                'ddp_cpu': self.num_processes * self.num_nodes
-            }
-            assert self.distributed_backend is not None
-            kwargs = dict(num_replicas=world_size[self.distributed_backend], rank=self.global_rank)
-
-        kwargs['shuffle'] = train
+    def _get_distributed_sampler(self, dataloader, shuffle):
+        kwargs = self.distributed_sampler_kwargs
+        kwargs['shuffle'] = shuffle and not self.overfit_batches
         sampler = DistributedSampler(dataloader.dataset, **kwargs)
         return sampler
 
@@ -189,13 +137,22 @@ class TrainerDataLoadingMixin(ABC):
             model: The current `LightningModule`
         """
         self.train_dataloader = self.request_dataloader(model.train_dataloader)
+        if (self.overfit_batches > 0):
+            if hasattr(self.train_dataloader, 'sampler') and isinstance(self.train_dataloader.sampler, RandomSampler):
+                rank_zero_warn('You requested to overfit but enabled training dataloader shuffling.'
+                               ' We are turning it off for you.')
+                self.train_dataloader = self.replace_sampler(
+                    self.train_dataloader, SequentialSampler(self.train_dataloader.dataset))
+
+        # debugging
+        self.dev_debugger.track_load_dataloader_call('train_dataloader', dataloaders=[self.train_dataloader])
 
         self.num_training_batches = 0
 
         # automatically add samplers
-        self.train_dataloader = self.auto_add_sampler(self.train_dataloader, train=True)
+        self.train_dataloader = self.auto_add_sampler(self.train_dataloader, shuffle=True)
 
-        self.num_training_batches = len(self.train_dataloader) if _has_len(self.train_dataloader) else float('inf')
+        self.num_training_batches = len(self.train_dataloader) if has_len(self.train_dataloader) else float('inf')
         self._worker_check(self.train_dataloader, 'train dataloader')
 
         if isinstance(self.limit_train_batches, int) or self.limit_train_batches == 0.0:
@@ -219,7 +176,7 @@ class TrainerDataLoadingMixin(ABC):
                     f'to the number of the training batches ({self.num_training_batches}). '
                     'If you want to disable validation set `limit_val_batches` to 0.0 instead.')
         else:
-            if not _has_len(self.train_dataloader):
+            if not has_len(self.train_dataloader):
                 if self.val_check_interval == 1.0:
                     self.val_check_batch = float('inf')
                 else:
@@ -245,14 +202,21 @@ class TrainerDataLoadingMixin(ABC):
         Returns:
             Tuple (num_batches, dataloaders)
         """
-        # use the training loader as val and test when overfitting
-        if self.overfit_batches > 0:
-            dataloaders = self.request_dataloader(getattr(model, 'train_dataloader'))
-        else:
-            dataloaders = self.request_dataloader(getattr(model, f'{mode}_dataloader'))
+        # always get the loaders first so we can count how many there are
+        loader_name = f'{mode}_dataloader'
+        dataloaders = self.request_dataloader(getattr(model, loader_name))
 
         if not isinstance(dataloaders, list):
             dataloaders = [dataloaders]
+
+        # when overfitting use the training loader as val and test
+        # duplicate it the numb of times needed to match the train loaders
+        if self.overfit_batches > 0:
+            num_loaders = len(dataloaders)
+            train_dataloader = self.request_dataloader(getattr(model, 'train_dataloader'))
+            dataloaders = [deepcopy(train_dataloader) for _ in range(num_loaders)]
+
+        self.dev_debugger.track_load_dataloader_call(loader_name, dataloaders=dataloaders)
 
         for loader_i in range(len(dataloaders)):
             loader = dataloaders[loader_i]
@@ -262,7 +226,7 @@ class TrainerDataLoadingMixin(ABC):
 
                 # when overfitting, the dataloader should not have sampler
                 if self.overfit_batches > 0:
-                    rank_zero_warn('You requested to overfit but enabled training dataloader shuffling.'
+                    rank_zero_warn('You requested to overfit but enabled test/val dataloader shuffling.'
                                    ' We are turning it off for you.')
                     dataloaders[loader_i] = self.replace_sampler(loader, SequentialSampler(loader.dataset))
 
@@ -274,7 +238,7 @@ class TrainerDataLoadingMixin(ABC):
             rank_zero_warn("One of given dataloaders is None and it will be skipped.")
 
         # add samplers
-        dataloaders = [self.auto_add_sampler(dl, train=False) for dl in dataloaders if dl is not None]
+        dataloaders = [self.auto_add_sampler(dl, shuffle=False) for dl in dataloaders if dl is not None]
 
         loader_num_batches = []
 
@@ -282,7 +246,7 @@ class TrainerDataLoadingMixin(ABC):
         # datasets could be none, 1 or 2+
         if len(dataloaders) != 0:
             for i, dataloader in enumerate(dataloaders):
-                num_batches = len(dataloader) if _has_len(dataloader) else float('inf')
+                num_batches = len(dataloader) if has_len(dataloader) else float('inf')
                 self._worker_check(dataloader, f'{mode} dataloader {i}')
 
                 # percent or num_steps
@@ -303,7 +267,7 @@ class TrainerDataLoadingMixin(ABC):
                     min_pct = 1.0 / len(dataloader)
                     raise MisconfigurationException(
                         f'you requested to check {limit_eval_batches} of the {mode} dataloader but'
-                        f' {limit_eval_batches}*{num_batches} = 0. Please increase the limit_{mode}_batches.'
+                        f' {limit_eval_batches}*{num_batches} < 1. Please increase the limit_{mode}_batches.'
                         f' Try at least limit_{mode}_batches={min_pct}'
                     )
 
@@ -317,8 +281,8 @@ class TrainerDataLoadingMixin(ABC):
         Args:
             model: The current `LightningModule`
         """
-        has_loader = self.is_overridden('val_dataloader', model)
-        has_step = self.is_overridden('validation_step', model)
+        has_loader = is_overridden('val_dataloader', model)
+        has_step = is_overridden('validation_step', model)
         if has_loader and has_step:
             self.num_val_batches, self.val_dataloaders = self._reset_eval_dataloader(model, 'val')
 
@@ -328,8 +292,8 @@ class TrainerDataLoadingMixin(ABC):
         Args:
             model: The current `LightningModule`
         """
-        has_loader = self.is_overridden('test_dataloader', model)
-        has_step = self.is_overridden('test_step', model)
+        has_loader = is_overridden('test_dataloader', model)
+        has_step = is_overridden('test_step', model)
         if has_loader and has_step:
             self.num_test_batches, self.test_dataloaders =\
                 self._reset_eval_dataloader(model, 'test')
@@ -344,26 +308,19 @@ class TrainerDataLoadingMixin(ABC):
             The dataloader
         """
         dataloader = dataloader_fx()
+        dataloader = self._flatten_dl_only(dataloader)
 
-        # get the function we'll use to get data
-        if self.use_ddp or self.use_ddp2:
-            # all processes wait until data download has happened
-            torch_distrib.barrier()
-
-        # data download/load on TPU
-        elif self.use_tpu and XLA_AVAILABLE:
-            # all processes wait until data download has happened
-            torch_xla.core.xla_model.rendezvous('pl.TrainerDataLoadingMixin.get_dataloaders')
-
-        elif self.use_horovod:
-            # all processes wait until data download has happened
-            hvd.join()
-
+        if self.accelerator_backend is not None:
+            self.accelerator_backend.barrier('get_dataloaders')
         return dataloader
 
-    def determine_data_use_amount(self, overfit_batches: float) -> None:
-        """Use less data for debugging purposes"""
-        if overfit_batches > 0:
-            self.limit_train_batches = overfit_batches
-            self.limit_val_batches = overfit_batches
-            self.limit_test_batches = overfit_batches
+    def _flatten_dl_only(self, dataloaders):
+        # handles user error when they return:
+        # return dl1, dl2  vs  return (dl1, dl2)
+        if isinstance(dataloaders, tuple):
+            all_dls = [isinstance(x, Iterable) for x in dataloaders]
+            all_dls = all(all_dls)
+            if all_dls:
+                dataloaders = list(dataloaders)
+
+        return dataloaders

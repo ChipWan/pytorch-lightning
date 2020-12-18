@@ -1,3 +1,17 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from enum import Enum
 from functools import wraps
 from typing import Callable, Optional
@@ -5,9 +19,17 @@ from typing import Callable, Optional
 import pytorch_lightning
 
 
-class TrainerState(Enum):
+class TrainerState(str, Enum):
     """ State which is set in the :class:`~pytorch_lightning.trainer.trainer.Trainer`
-    to indicate what is currently or was executed. """
+    to indicate what is currently or was executed.
+
+    >>> # you can math the type with string
+    >>> TrainerState.RUNNING == 'RUNNING'
+    True
+    >>> # which is case sensitive
+    >>> TrainerState.FINISHED == 'finished'
+    False
+    """
     INITIALIZING = 'INITIALIZING'
     RUNNING = 'RUNNING'
     FINISHED = 'FINISHED'
@@ -28,20 +50,17 @@ def trainer_state(*, entering: Optional[TrainerState] = None, exiting: Optional[
             if not isinstance(self, pytorch_lightning.Trainer):
                 return fn(self, *args, **kwargs)
 
-            state_before = self.state
+            state_before = self._state
             if entering is not None:
-                self.state = entering
+                self._state = entering
             result = fn(self, *args, **kwargs)
 
             # The INTERRUPTED state can be set inside the run function. To indicate that run was interrupted
             # we retain INTERRUPTED state
-            if self.state == TrainerState.INTERRUPTED:
+            if self._state == TrainerState.INTERRUPTED:
                 return result
 
-            if exiting is not None:
-                self.state = exiting
-            else:
-                self.state = state_before
+            self._state = exiting if exiting is not None else state_before
             return result
 
         return wrapped_fn

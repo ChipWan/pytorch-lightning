@@ -1,4 +1,19 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from abc import ABC
+from copy import deepcopy
 from typing import Callable, List
 
 from pytorch_lightning.callbacks import Callback
@@ -11,10 +26,10 @@ class TrainerCallbackHookMixin(ABC):
     callbacks: List[Callback] = []
     get_model: Callable
 
-    def setup(self, stage: str):
+    def setup(self, model, stage: str):
         """Called in the beginning of fit and test"""
         for callback in self.callbacks:
-            callback.setup(self, self.get_model(), stage)
+            callback.setup(self, model, stage)
 
     def teardown(self, stage: str):
         """Called at the end of fit and test"""
@@ -31,10 +46,10 @@ class TrainerCallbackHookMixin(ABC):
         for callback in self.callbacks:
             callback.on_init_end(self)
 
-    def on_fit_start(self, model):
+    def on_fit_start(self):
         """Called when the trainer initialization begins, model has not yet been set."""
         for callback in self.callbacks:
-            callback.on_fit_start(self, model)
+            callback.on_fit_start(self, self.get_model())
 
     def on_fit_end(self):
         """Called when the trainer initialization begins, model has not yet been set."""
@@ -56,10 +71,10 @@ class TrainerCallbackHookMixin(ABC):
         for callback in self.callbacks:
             callback.on_train_epoch_start(self, self.get_model())
 
-    def on_train_epoch_end(self):
+    def on_train_epoch_end(self, outputs):
         """Called when the epoch ends."""
         for callback in self.callbacks:
-            callback.on_train_epoch_end(self, self.get_model())
+            callback.on_train_epoch_end(self, self.get_model(), outputs)
 
     def on_validation_epoch_start(self):
         """Called when the epoch begins."""
@@ -126,30 +141,30 @@ class TrainerCallbackHookMixin(ABC):
         for callback in self.callbacks:
             callback.on_train_batch_start(self, self.get_model(), batch, batch_idx, dataloader_idx)
 
-    def on_train_batch_end(self, batch, batch_idx, dataloader_idx):
+    def on_train_batch_end(self, outputs, batch, batch_idx, dataloader_idx):
         """Called when the training batch ends."""
         for callback in self.callbacks:
-            callback.on_train_batch_end(self, self.get_model(), batch, batch_idx, dataloader_idx)
+            callback.on_train_batch_end(self, self.get_model(), outputs, batch, batch_idx, dataloader_idx)
 
     def on_validation_batch_start(self, batch, batch_idx, dataloader_idx):
         """Called when the validation batch begins."""
         for callback in self.callbacks:
             callback.on_validation_batch_start(self, self.get_model(), batch, batch_idx, dataloader_idx)
 
-    def on_validation_batch_end(self, batch, batch_idx, dataloader_idx):
+    def on_validation_batch_end(self, outputs, batch, batch_idx, dataloader_idx):
         """Called when the validation batch ends."""
         for callback in self.callbacks:
-            callback.on_validation_batch_end(self, self.get_model(), batch, batch_idx, dataloader_idx)
+            callback.on_validation_batch_end(self, self.get_model(), outputs, batch, batch_idx, dataloader_idx)
 
     def on_test_batch_start(self, batch, batch_idx, dataloader_idx):
         """Called when the test batch begins."""
         for callback in self.callbacks:
             callback.on_test_batch_start(self, self.get_model(), batch, batch_idx, dataloader_idx)
 
-    def on_test_batch_end(self, batch, batch_idx, dataloader_idx):
+    def on_test_batch_end(self, outputs, batch, batch_idx, dataloader_idx):
         """Called when the test batch ends."""
         for callback in self.callbacks:
-            callback.on_test_batch_end(self, self.get_model(), batch, batch_idx, dataloader_idx)
+            callback.on_test_batch_end(self, self.get_model(), outputs, batch, batch_idx, dataloader_idx)
 
     def on_validation_start(self):
         """Called when the validation loop begins."""
@@ -175,3 +190,36 @@ class TrainerCallbackHookMixin(ABC):
         """Called when the training is interrupted by KeyboardInterrupt."""
         for callback in self.callbacks:
             callback.on_keyboard_interrupt(self, self.get_model())
+
+    def on_save_checkpoint(self):
+        """Called when saving a model checkpoint."""
+        callback_states = {}
+        for callback in self.callbacks:
+            callback_class = type(callback)
+            state = callback.on_save_checkpoint(self, self.get_model())
+            if state:
+                callback_states[callback_class] = state
+        return callback_states
+
+    def on_load_checkpoint(self, checkpoint):
+        """Called when loading a model checkpoint."""
+        callback_states = checkpoint.get('callbacks')
+        for callback in self.callbacks:
+            state = callback_states.get(type(callback))
+            if state:
+                state = deepcopy(state)
+                callback.on_load_checkpoint(state)
+
+    def on_after_backward(self):
+        """
+        Called after loss.backward() and before optimizers do anything.
+        """
+        for callback in self.callbacks:
+            callback.on_after_backward(self, self.get_model())
+
+    def on_before_zero_grad(self, optimizer):
+        """
+        Called after optimizer.step() and before optimizer.zero_grad().
+        """
+        for callback in self.callbacks:
+            callback.on_before_zero_grad(self, self.get_model(), optimizer)

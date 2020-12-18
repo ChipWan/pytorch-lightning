@@ -1,7 +1,21 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
+import shutil
 import subprocess
 from collections import OrderedDict
-from subprocess import PIPE
 from typing import Tuple, Dict, Union, List, Any
 
 import numpy as np
@@ -141,12 +155,20 @@ class ModelSummary(object):
           | Name | Type       | Params | In sizes  | Out sizes
         ------------------------------------------------------------
         0 | net  | Sequential | 132 K  | [10, 256] | [10, 512]
+        ------------------------------------------------------------
+        132 K     Trainable params
+        0         Non-trainable params
+        132 K     Total params
         >>> ModelSummary(model, mode='full')  # doctest: +NORMALIZE_WHITESPACE
           | Name  | Type        | Params | In sizes  | Out sizes
         --------------------------------------------------------------
         0 | net   | Sequential  | 132 K  | [10, 256] | [10, 512]
         1 | net.0 | Linear      | 131 K  | [10, 256] | [10, 512]
-        2 | net.1 | BatchNorm1d | 1 K    | [10, 512] | [10, 512]
+        2 | net.1 | BatchNorm1d | 1.0 K    | [10, 512] | [10, 512]
+        --------------------------------------------------------------
+        132 K     Trainable params
+        0         Non-trainable params
+        132 K     Total params
     """
 
     MODE_TOP = "top"
@@ -207,8 +229,8 @@ class ModelSummary(object):
         input_ = model.example_input_array
         input_ = model.transfer_batch_to_device(input_, model.device)
 
-        if trainer is not None and trainer.amp_type == AMPType.NATIVE and not trainer.use_tpu:
-                model.forward = torch.cuda.amp.autocast()(model.forward)
+        if trainer is not None and trainer.amp_backend == AMPType.NATIVE and not trainer.use_tpu:
+            model.forward = torch.cuda.amp.autocast()(model.forward)
 
         mode = model.training
         model.eval()
@@ -238,7 +260,10 @@ class ModelSummary(object):
             arrays.append(["In sizes", self.in_sizes])
             arrays.append(["Out sizes", self.out_sizes])
 
-        return _format_summary_table(*arrays)
+        trainable_parameters = sum(p.numel() for p in self._model.parameters() if p.requires_grad)
+        total_parameters = sum(p.numel() for p in self._model.parameters())
+
+        return _format_summary_table(total_parameters, trainable_parameters, *arrays)
 
     def __repr__(self):
         return str(self)
@@ -255,7 +280,7 @@ def parse_batch_shape(batch: Any) -> Union[str, List]:
     return UNKNOWN_SIZE
 
 
-def _format_summary_table(*cols) -> str:
+def _format_summary_table(total_parameters: int, trainable_parameters: int, *cols) -> str:
     """
     Takes in a number of arrays, each specifying a column in
     the summary table, and combines them all into one big
@@ -283,6 +308,14 @@ def _format_summary_table(*cols) -> str:
         for c, l in zip(cols, col_widths):
             line.append(s.format(str(c[1][i]), l))
         summary += "\n" + " | ".join(line)
+    summary += "\n" + "-" * total_width
+
+    summary += "\n" + s.format(get_human_readable_count(trainable_parameters), 10)
+    summary += "Trainable params"
+    summary += "\n" + s.format(get_human_readable_count(total_parameters - trainable_parameters), 10)
+    summary += "Non-trainable params"
+    summary += "\n" + s.format(get_human_readable_count(total_parameters), 10)
+    summary += "Total params"
 
     return summary
 
@@ -316,23 +349,27 @@ def get_memory_profile(mode: str) -> Union[Dict[str, int], Dict[int, int]]:
 
 
 def get_gpu_memory_map() -> Dict[str, int]:
-    """Get the current gpu usage.
+    """
+    Get the current gpu usage.
 
     Return:
         A dictionary in which the keys are device ids as integers and
         values are memory usage as integers in MB.
     """
     result = subprocess.run(
-        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,nounits,noheader",],
+        [shutil.which("nvidia-smi"), "--query-gpu=memory.used", "--format=csv,nounits,noheader"],
         encoding="utf-8",
         # capture_output=True,          # valid for python version >=3.7
-        stdout=PIPE,
-        stderr=PIPE,  # for backward compatibility with python version 3.6
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,  # for backward compatibility with python version 3.6
         check=True,
     )
+
     # Convert lines into a dictionary
-    gpu_memory = [int(x) for x in result.stdout.strip().split(os.linesep)]
-    gpu_memory_map = {f"gpu_{index}": memory for index, memory in enumerate(gpu_memory)}
+    gpu_memory = [float(x) for x in result.stdout.strip().split(os.linesep)]
+    gpu_memory_map = {
+        f"gpu_id: {gpu_id}/memory.used (MB)": memory for gpu_id, memory in enumerate(gpu_memory)
+    }
     return gpu_memory_map
 
 
@@ -345,13 +382,13 @@ def get_human_readable_count(number: int) -> str:
         >>> get_human_readable_count(123)
         '123  '
         >>> get_human_readable_count(1234)  # (one thousand)
-        '1 K'
+        '1.2 K'
         >>> get_human_readable_count(2e6)   # (two million)
-        '2 M'
+        '2.0 M'
         >>> get_human_readable_count(3e9)   # (three billion)
-        '3 B'
-        >>> get_human_readable_count(4e12)  # (four trillion)
-        '4 T'
+        '3.0 B'
+        >>> get_human_readable_count(4e14)  # (four hundred trillion)
+        '400 T'
         >>> get_human_readable_count(5e15)  # (more than trillion)
         '5,000 T'
 
@@ -370,4 +407,7 @@ def get_human_readable_count(number: int) -> str:
     shift = -3 * (num_groups - 1)
     number = number * (10 ** shift)
     index = num_groups - 1
-    return f"{int(number):,d} {labels[index]}"
+    if index < 1 or number >= 100:
+        return f"{int(number):,d} {labels[index]}"
+    else:
+        return f"{number:,.1f} {labels[index]}"

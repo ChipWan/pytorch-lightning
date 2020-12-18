@@ -1,3 +1,16 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import torch
 
 from pytorch_lightning import Trainer
@@ -47,10 +60,13 @@ def run_model_test(trainer_options, model, on_gpu: bool = True, version=None, wi
         trainer_options.update(checkpoint_callback=True)
 
     trainer = Trainer(**trainer_options)
+    initial_values = torch.tensor([torch.sum(torch.abs(x)) for x in model.parameters()])
     result = trainer.fit(model)
+    post_train_values = torch.tensor([torch.sum(torch.abs(x)) for x in model.parameters()])
 
-    # correct result and ok accuracy
     assert result == 1, 'trainer failed'
+    # Check that the model is actually changed post-training
+    assert torch.norm(initial_values - post_train_values) > 0.1
 
     # test model loading
     pretrained_model = load_model_from_checkpoint(logger, trainer.checkpoint_callback.best_model_path)
@@ -70,9 +86,11 @@ def run_model_test(trainer_options, model, on_gpu: bool = True, version=None, wi
             trainer.optimizers, trainer.lr_schedulers, trainer.optimizer_frequencies = \
                 trainer.init_optimizers(pretrained_model)
 
-        # test HPC loading / saving
-        trainer.hpc_save(save_dir, logger)
-        trainer.hpc_load(save_dir, on_gpu=on_gpu)
+        # test HPC saving
+        trainer.checkpoint_connector.hpc_save(save_dir, logger)
+        # test HPC loading
+        checkpoint_path = trainer.checkpoint_connector.get_max_ckpt_path_from_folder(save_dir)
+        trainer.checkpoint_connector.hpc_load(checkpoint_path, on_gpu=on_gpu)
 
 
 def run_prediction(dataloader, trained_model, dp=False, min_acc=0.50):

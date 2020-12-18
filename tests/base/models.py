@@ -1,3 +1,16 @@
+# Copyright The PyTorch Lightning team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 from collections import OrderedDict
 
 import numpy as np
@@ -6,19 +19,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from tests.base.datasets import TrialMNIST, AverageDataset, MNIST
-
-try:
-    from test_tube import HyperOptArgumentParser
-except ImportError:
-    # TODO: this should be discussed and moved out of this package
-    raise ImportError('Missing test-tube package.')
-
 from pytorch_lightning.core.lightning import LightningModule
+from tests.base.datasets import MNIST, AverageDataset, TrialMNIST
 
 
 class Generator(nn.Module):
-    def __init__(self, latent_dim: tuple, img_shape: tuple):
+    def __init__(self, latent_dim: int, img_shape: tuple):
         super().__init__()
         self.img_shape = img_shape
 
@@ -64,10 +70,10 @@ class Discriminator(nn.Module):
         return validity
 
 
-class TestGAN(LightningModule):
+class BasicGAN(LightningModule):
     """Implements a basic GAN for the purpose of illustrating multiple optimizers."""
 
-    def __init__(self, hidden_dim, learning_rate, b1, b2, **kwargs):
+    def __init__(self, hidden_dim: int = 128, learning_rate: float = 0.001, b1: float = 0.5, b2: float = 0.999, **kwargs):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.learning_rate = learning_rate
@@ -163,6 +169,7 @@ class ParityModuleRNN(LightningModule):
         super().__init__()
         self.rnn = nn.LSTM(10, 20, batch_first=True)
         self.linear_out = nn.Linear(in_features=20, out_features=5)
+        self.example_input_array = torch.rand(2, 3, 10)
 
     def forward(self, x):
         seq, last = self.rnn(x)
@@ -189,6 +196,7 @@ class ParityModuleMNIST(LightningModule):
         self.c_d1_bn = nn.BatchNorm1d(128)
         self.c_d1_drop = nn.Dropout(0.3)
         self.c_d2 = nn.Linear(in_features=128, out_features=10)
+        self.example_input_array = torch.rand(2, 1, 28, 28)
 
     def forward(self, x):
         x = x.view(x.size(0), -1)
@@ -209,5 +217,4 @@ class ParityModuleMNIST(LightningModule):
         return torch.optim.Adam(self.parameters(), lr=0.02)
 
     def train_dataloader(self):
-        return DataLoader(MNIST(train=True, download=True,),
-                          batch_size=128)
+        return DataLoader(MNIST(train=True, download=True,), batch_size=128, num_workers=1)
